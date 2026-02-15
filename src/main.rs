@@ -144,7 +144,11 @@ async fn edit_task(db: Db, id: i64) -> Option<Template> {
 }
 
 #[post("/task/<id>", data = "<task>")]
-async fn update_task(db: Db, id: i64, task: rocket::form::Form<Task>) -> rocket::response::Redirect {
+async fn update_task(
+    db: Db,
+    id: i64,
+    task: rocket::form::Form<Task>,
+) -> rocket::response::Redirect {
     Task::update(&db, id, task.into_inner()).await;
     rocket::response::Redirect::to("/")
 }
@@ -176,13 +180,18 @@ pub fn rocket() -> _ {
                 .expect("failed to create table");
 
                 // Ensure remarks column exists for existing tables
-                let mut stmt = conn.prepare("PRAGMA table_info(tasks)").expect("failed to prepare pragma");
-                let columns: Vec<String> = stmt.query_map([], |row| row.get(1)).expect("failed to query pragma")
+                let mut stmt = conn
+                    .prepare("PRAGMA table_info(tasks)")
+                    .expect("failed to prepare pragma");
+                let columns: Vec<String> = stmt
+                    .query_map([], |row| row.get(1))
+                    .expect("failed to query pragma")
                     .map(|r| r.expect("failed to get column name"))
                     .collect();
 
                 if !columns.contains(&"remarks".to_string()) {
-                    conn.execute("ALTER TABLE tasks ADD COLUMN remarks TEXT", []).expect("failed to add remarks column");
+                    conn.execute("ALTER TABLE tasks ADD COLUMN remarks TEXT", [])
+                        .expect("failed to add remarks column");
                 }
             })
             .await;
@@ -263,7 +272,10 @@ mod tests {
         // 1. Create a new task via Form
         let task_name = format!("Test Form Task {}", uuid::Uuid::new_v4());
         let remarks = "Form remarks";
-        let body = format!("name={}&status=done&date=2023-12-25&remarks={}", task_name, remarks);
+        let body = format!(
+            "name={}&status=done&date=2023-12-25&remarks={}",
+            task_name, remarks
+        );
         let response = client
             .post("/task")
             .header(ContentType::Form)
@@ -276,9 +288,9 @@ mod tests {
         // 2. Verify it appears in JSON list
         let response = client.get("/tasks").dispatch();
         let tasks: Vec<Task> = response.into_json().expect("valid JSON tasks");
-        assert!(tasks
-            .iter()
-            .any(|t| t.name == task_name && t.status == "done" && t.remarks == Some(remarks.to_string())));
+        assert!(tasks.iter().any(|t| t.name == task_name
+            && t.status == "done"
+            && t.remarks == Some(remarks.to_string())));
     }
 
     #[test]
@@ -335,7 +347,10 @@ mod tests {
         // 3. Update the task
         let updated_name = format!("Updated Task {}", uuid::Uuid::new_v4());
         let updated_remarks = "Updated remarks here";
-        let body = format!("name={}&status=done&date=2024-01-01&remarks={}", updated_name, updated_remarks);
+        let body = format!(
+            "name={}&status=done&date=2024-01-01&remarks={}",
+            updated_name, updated_remarks
+        );
         let response = client
             .post(format!("/task/{}", id))
             .header(ContentType::Form)
