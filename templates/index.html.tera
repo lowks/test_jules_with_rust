@@ -42,9 +42,6 @@
                         </div>
                     </div>
                 </div>
-                <div class="flex justify-end">
-                    <button type="submit" class="text-white bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:outline-none focus:ring-blue-300 font-medium rounded-lg text-sm w-full sm:w-auto px-5 py-2.5 text-center">Add Task</button>
-                </div>
             </form>
         </div>
 
@@ -101,5 +98,22 @@
         </div>
     </div>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/flowbite/2.2.1/flowbite.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const dateInput = document.getElementById('date');
+            if (dateInput) {
+                dateInput.addEventListener('keydown', function(event) {
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        if (typeof this.form.requestSubmit === 'function') {
+                            this.form.requestSubmit();
+                        } else {
+                            this.form.submit();
+                        }
+                    }
+                });
+            }
+        });
+    </script>
 </body>
 </html>
