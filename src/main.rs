@@ -1,92 +1,191 @@
-use rocket::{get, post, launch, routes, serde::{Serialize, Deserialize, json::Json}, fairing::AdHoc};
+use rocket::{
+    fairing::AdHoc,
+    get, launch, post, routes,
+    serde::{json::Json, Deserialize, Serialize},
+    FromForm,
+};
+use rocket_dyn_templates::{context, Template};
 use rocket_sync_db_pools::{database, rusqlite};
 
 #[database("sqlite_db")]
-struct Db(rusqlite::Connection);
+pub struct Db(rusqlite::Connection);
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, FromForm, Clone, PartialEq)]
 #[serde(crate = "rocket::serde")]
-struct Entry {
-    id: Option<i64>,
-    text: String,
+pub struct Task {
+    pub id: Option<i64>,
+    pub name: String,
+    pub status: String, // "new" or "done"
+    pub date: String,   // ISO date string from date picker
 }
 
-#[get("/entries")]
-async fn get_entries(db: Db) -> Json<Vec<Entry>> {
-    let entries = db.run(|conn| {
-        let mut stmt = conn.prepare("SELECT id, text FROM entries").expect("failed to prepare");
-        let entry_iter = stmt.query_map([], |row| {
-            Ok(Entry {
-                id: Some(row.get(0)?),
-                text: row.get(1)?,
-            })
-        }).expect("failed to query map");
+impl Task {
+    pub async fn all(db: &Db) -> Vec<Task> {
+        db.run(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT id, name, status, date FROM tasks ORDER BY date DESC")
+                .expect("failed to prepare");
+            let task_iter = stmt
+                .query_map([], |row| {
+                    Ok(Task {
+                        id: Some(row.get(0)?),
+                        name: row.get(1)?,
+                        status: row.get(2)?,
+                        date: row.get(3)?,
+                    })
+                })
+                .expect("failed to query map");
 
-        entry_iter.map(|r| r.expect("failed to get row")).collect::<Vec<Entry>>()
-    }).await;
+            task_iter
+                .map(|r| r.expect("failed to get row"))
+                .collect::<Vec<Task>>()
+        })
+        .await
+    }
 
-    Json(entries)
+    pub async fn insert(db: &Db, task: Task) -> i64 {
+        db.run(move |conn| {
+            conn.execute(
+                "INSERT INTO tasks (name, status, date) VALUES (?, ?, ?)",
+                [task.name, task.status, task.date],
+            )
+            .expect("failed to insert");
+            conn.last_insert_rowid()
+        })
+        .await
+    }
 }
 
-#[post("/entries", format = "json", data = "<entry>")]
-async fn create_entry(db: Db, entry: Json<Entry>) -> Json<Entry> {
-    let text = entry.text.clone();
-    let id = db.run(move |conn| {
-        conn.execute("INSERT INTO entries (text) VALUES (?)", [text]).expect("failed to insert");
-        conn.last_insert_rowid()
-    }).await;
+#[get("/")]
+async fn index(db: Db) -> Template {
+    let tasks = Task::all(&db).await;
+    Template::render(
+        "index",
+        context! {
+            tasks: tasks,
+        },
+    )
+}
 
-    Json(Entry {
-        id: Some(id),
-        text: entry.text.clone(),
-    })
+#[get("/tasks")]
+async fn get_tasks(db: Db) -> Json<Vec<Task>> {
+    Json(Task::all(&db).await)
+}
+
+#[post("/task", data = "<task>")]
+async fn create_task_form(db: Db, task: rocket::form::Form<Task>) -> rocket::response::Redirect {
+    Task::insert(&db, task.into_inner()).await;
+    rocket::response::Redirect::to("/")
+}
+
+#[post("/tasks", format = "json", data = "<task>")]
+async fn create_task_json(db: Db, task: Json<Task>) -> Json<Task> {
+    let mut task_obj = task.into_inner();
+    let id = Task::insert(&db, task_obj.clone()).await;
+    task_obj.id = Some(id);
+    Json(task_obj)
 }
 
 #[launch]
 pub fn rocket() -> _ {
     rocket::build()
         .attach(Db::fairing())
+        .attach(Template::fairing())
         .attach(AdHoc::on_ignite("Run Migrations", |rocket| async {
             let db = Db::get_one(&rocket).await.expect("database connection");
             db.run(|conn| {
                 conn.execute(
-                    "CREATE TABLE IF NOT EXISTS entries (id INTEGER PRIMARY KEY, text TEXT NOT NULL)",
+                    "CREATE TABLE IF NOT EXISTS tasks (
+                        id INTEGER PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        date TEXT NOT NULL
+                    )",
                     [],
-                ).expect("failed to create table");
-            }).await;
+                )
+                .expect("failed to create table");
+            })
+            .await;
             rocket
         }))
-        .mount("/", routes![get_entries, create_entry])
+        .mount(
+            "/",
+            routes![index, get_tasks, create_task_form, create_task_json],
+        )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rocket::http::{ContentType, Status};
     use rocket::local::blocking::Client;
-    use rocket::http::{Status, ContentType};
 
     #[test]
-    fn test_create_and_get_entries() {
+    fn test_index_page() {
+        let client = Client::tracked(rocket()).expect("valid rocket instance");
+        let response = client.get("/").dispatch();
+        assert_eq!(response.status(), Status::Ok);
+        let body = response.into_string().unwrap();
+        assert!(body.contains("Task Tracker"));
+        assert!(body.contains("Add New Task"));
+    }
+
+    #[test]
+    fn test_empty_tasks_list() {
+        // Use an in-memory database for a fresh state if possible,
+        // but rocket() uses Rocket.toml which points to a file.
+        // For simplicity, we just check the current state.
+        let client = Client::tracked(rocket()).expect("valid rocket instance");
+        let response = client.get("/").dispatch();
+        assert_eq!(response.status(), Status::Ok);
+    }
+
+    #[test]
+    fn test_create_and_get_tasks_json() {
         let client = Client::tracked(rocket()).expect("valid rocket instance");
 
-        // 1. Get initial entries
-        let response = client.get("/entries").dispatch();
-        assert_eq!(response.status(), Status::Ok);
-
-        // 2. Create a new entry
-        let response = client.post("/entries")
+        // 1. Create a new task via JSON
+        let task_name = format!("Test JSON Task {}", uuid::Uuid::new_v4());
+        let response = client
+            .post("/tasks")
             .header(ContentType::JSON)
-            .body(r#"{"text": "Test Entry"}"#)
+            .body(format!(
+                r#"{{"name": "{}", "status": "new", "date": "2023-10-27"}}"#,
+                task_name
+            ))
             .dispatch();
         assert_eq!(response.status(), Status::Ok);
-        let entry: Entry = response.into_json().expect("valid JSON entry");
-        assert_eq!(entry.text, "Test Entry");
-        assert!(entry.id.is_some());
+        let task: Task = response.into_json().expect("valid JSON task");
+        assert_eq!(task.name, task_name);
 
-        // 3. Get entries again and verify it contains our new entry
-        let response = client.get("/entries").dispatch();
+        // 2. Get tasks again and verify it contains our new task
+        let response = client.get("/tasks").dispatch();
         assert_eq!(response.status(), Status::Ok);
-        let entries: Vec<Entry> = response.into_json().expect("valid JSON entries");
-        assert!(entries.iter().any(|e| e.text == "Test Entry"));
+        let tasks: Vec<Task> = response.into_json().expect("valid JSON tasks");
+        assert!(tasks.iter().any(|t| t.name == task_name));
+    }
+
+    #[test]
+    fn test_create_task_form() {
+        let client = Client::tracked(rocket()).expect("valid rocket instance");
+
+        // 1. Create a new task via Form
+        let task_name = format!("Test Form Task {}", uuid::Uuid::new_v4());
+        let body = format!("name={}&status=done&date=2023-12-25", task_name);
+        let response = client
+            .post("/task")
+            .header(ContentType::Form)
+            .body(body)
+            .dispatch();
+
+        // Should redirect to /
+        assert_eq!(response.status(), Status::SeeOther);
+
+        // 2. Verify it appears in JSON list
+        let response = client.get("/tasks").dispatch();
+        let tasks: Vec<Task> = response.into_json().expect("valid JSON tasks");
+        assert!(tasks
+            .iter()
+            .any(|t| t.name == task_name && t.status == "done"));
     }
 }
