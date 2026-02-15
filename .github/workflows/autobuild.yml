@@ -1,14 +1,14 @@
-name: Rust CI
+name: Autobuild
 
 on:
-  pull_request:
+  push:
     branches: [ "master" ]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build_and_test:
+  autobuild:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
