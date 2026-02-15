@@ -141,7 +141,11 @@ async fn edit_task(db: Db, id: i64) -> Option<Template> {
 }
 
 #[post("/task/<id>", data = "<task>")]
-async fn update_task(db: Db, id: i64, task: rocket::form::Form<Task>) -> rocket::response::Redirect {
+async fn update_task(
+    db: Db,
+    id: i64,
+    task: rocket::form::Form<Task>,
+) -> rocket::response::Redirect {
     Task::update(&db, id, task.into_inner()).await;
     rocket::response::Redirect::to("/")
 }
