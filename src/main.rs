@@ -203,6 +203,11 @@ mod tests {
         let body = response.into_string().unwrap();
         assert!(body.contains("Task Tracker"));
         assert!(body.contains("Add New Task"));
+        // Verify "Add Task" button is removed
+        assert!(!body.contains("Add Task"));
+        // Verify Enter key listener is present
+        assert!(body.contains("addEventListener('keydown'"));
+        assert!(body.contains("event.key === 'Enter'"));
     }
 
     #[test]
