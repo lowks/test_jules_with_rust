@@ -1,5 +1,7 @@
 # Rocket SQLite Task Tracker
 
+[![Autobuild](https://github.com/lowks/test_jules_with_rust/actions/workflows/autobuild.yml/badge.svg)](https://github.com/lowks/test_jules_with_rust/actions/workflows/autobuild.yml)
+
 A modern web application built with the **Rocket** Rust framework and **SQLite** (via `rusqlite`). This application allows you to manage tasks with a name, status, and date.
 
 ## Features
