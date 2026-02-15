@@ -17,13 +17,14 @@ pub struct Task {
     pub name: String,
     pub status: String, // "new" or "done"
     pub date: String,   // ISO date string from date picker
+    pub remarks: Option<String>,
 }
 
 impl Task {
     pub async fn all(db: &Db) -> Vec<Task> {
         db.run(|conn| {
             let mut stmt = conn
-                .prepare("SELECT id, name, status, date FROM tasks ORDER BY date DESC")
+                .prepare("SELECT id, name, status, date, remarks FROM tasks ORDER BY date DESC")
                 .expect("failed to prepare");
             let task_iter = stmt
                 .query_map([], |row| {
@@ -32,6 +33,7 @@ impl Task {
                         name: row.get(1)?,
                         status: row.get(2)?,
                         date: row.get(3)?,
+                        remarks: row.get(4)?,
                     })
                 })
                 .expect("failed to query map");
@@ -46,8 +48,8 @@ impl Task {
     pub async fn insert(db: &Db, task: Task) -> i64 {
         db.run(move |conn| {
             conn.execute(
-                "INSERT INTO tasks (name, status, date) VALUES (?, ?, ?)",
-                [task.name, task.status, task.date],
+                "INSERT INTO tasks (name, status, date, remarks) VALUES (?, ?, ?, ?)",
+                rusqlite::params![task.name, task.status, task.date, task.remarks],
             )
             .expect("failed to insert");
             conn.last_insert_rowid()
@@ -58,7 +60,7 @@ impl Task {
     pub async fn find(db: &Db, id: i64) -> Option<Task> {
         db.run(move |conn| {
             conn.query_row(
-                "SELECT id, name, status, date FROM tasks WHERE id = ?",
+                "SELECT id, name, status, date, remarks FROM tasks WHERE id = ?",
                 [id],
                 |row| {
                     Ok(Task {
@@ -66,6 +68,7 @@ impl Task {
                         name: row.get(1)?,
                         status: row.get(2)?,
                         date: row.get(3)?,
+                        remarks: row.get(4)?,
                     })
                 },
             )
@@ -77,8 +80,8 @@ impl Task {
     pub async fn update(db: &Db, id: i64, task: Task) -> bool {
         db.run(move |conn| {
             conn.execute(
-                "UPDATE tasks SET name = ?, status = ?, date = ? WHERE id = ?",
-                rusqlite::params![task.name, task.status, task.date, id],
+                "UPDATE tasks SET name = ?, status = ?, date = ?, remarks = ? WHERE id = ?",
+                rusqlite::params![task.name, task.status, task.date, task.remarks, id],
             )
             .expect("failed to update")
                 > 0
@@ -169,11 +172,27 @@ pub fn rocket() -> _ {
                         id INTEGER PRIMARY KEY,
                         name TEXT NOT NULL,
                         status TEXT NOT NULL,
-                        date TEXT NOT NULL
+                        date TEXT NOT NULL,
+                        remarks TEXT
                     )",
                     [],
                 )
                 .expect("failed to create table");
+
+                // Ensure remarks column exists for existing tables
+                let mut stmt = conn
+                    .prepare("PRAGMA table_info(tasks)")
+                    .expect("failed to prepare pragma");
+                let columns: Vec<String> = stmt
+                    .query_map([], |row| row.get(1))
+                    .expect("failed to query pragma")
+                    .map(|r| r.expect("failed to get column name"))
+                    .collect();
+
+                if !columns.contains(&"remarks".to_string()) {
+                    conn.execute("ALTER TABLE tasks ADD COLUMN remarks TEXT", [])
+                        .expect("failed to add remarks column");
+                }
             })
             .await;
             rocket
@@ -225,17 +244,19 @@ mod tests {
 
         // 1. Create a new task via JSON
         let task_name = format!("Test JSON Task {}", uuid::Uuid::new_v4());
+        let remarks = "Some JSON remarks";
         let response = client
             .post("/tasks")
             .header(ContentType::JSON)
             .body(format!(
-                r#"{{"name": "{}", "status": "new", "date": "2023-10-27"}}"#,
-                task_name
+                r#"{{"name": "{}", "status": "new", "date": "2023-10-27", "remarks": "{}"}}"#,
+                task_name, remarks
             ))
             .dispatch();
         assert_eq!(response.status(), Status::Ok);
         let task: Task = response.into_json().expect("valid JSON task");
         assert_eq!(task.name, task_name);
+        assert_eq!(task.remarks, Some(remarks.to_string()));
 
         // 2. Get tasks again and verify it contains our new task
         let response = client.get("/tasks").dispatch();
@@ -250,7 +271,11 @@ mod tests {
 
         // 1. Create a new task via Form
         let task_name = format!("Test Form Task {}", uuid::Uuid::new_v4());
-        let body = format!("name={}&status=done&date=2023-12-25", task_name);
+        let remarks = "Form remarks";
+        let body = format!(
+            "name={}&status=done&date=2023-12-25&remarks={}",
+            task_name, remarks
+        );
         let response = client
             .post("/task")
             .header(ContentType::Form)
@@ -263,9 +288,9 @@ mod tests {
         // 2. Verify it appears in JSON list
         let response = client.get("/tasks").dispatch();
         let tasks: Vec<Task> = response.into_json().expect("valid JSON tasks");
-        assert!(tasks
-            .iter()
-            .any(|t| t.name == task_name && t.status == "done"));
+        assert!(tasks.iter().any(|t| t.name == task_name
+            && t.status == "done"
+            && t.remarks == Some(remarks.to_string())));
     }
 
     #[test]
@@ -274,12 +299,13 @@ mod tests {
 
         // 1. Create a task
         let task_name = format!("View Test Task {}", uuid::Uuid::new_v4());
+        let remarks = "Viewing these remarks";
         let response = client
             .post("/tasks")
             .header(ContentType::JSON)
             .body(format!(
-                r#"{{"name": "{}", "status": "new", "date": "2023-10-27"}}"#,
-                task_name
+                r#"{{"name": "{}", "status": "new", "date": "2023-10-27", "remarks": "{}"}}"#,
+                task_name, remarks
             ))
             .dispatch();
         let task: Task = response.into_json().expect("valid JSON task");
@@ -290,6 +316,7 @@ mod tests {
         assert_eq!(response.status(), Status::Ok);
         let body = response.into_string().unwrap();
         assert!(body.contains(&task_name));
+        assert!(body.contains(remarks));
         assert!(body.contains("Task Details"));
     }
 
@@ -303,7 +330,7 @@ mod tests {
             .post("/tasks")
             .header(ContentType::JSON)
             .body(format!(
-                r#"{{"name": "{}", "status": "new", "date": "2023-10-27"}}"#,
+                r#"{{"name": "{}", "status": "new", "date": "2023-10-27", "remarks": "Initial remarks"}}"#,
                 task_name
             ))
             .dispatch();
@@ -313,11 +340,17 @@ mod tests {
         // 2. Get edit page
         let response = client.get(format!("/task/{}/edit", id)).dispatch();
         assert_eq!(response.status(), Status::Ok);
-        assert!(response.into_string().unwrap().contains("Edit Task"));
+        let body = response.into_string().unwrap();
+        assert!(body.contains("Edit Task"));
+        assert!(body.contains("Initial remarks"));
 
         // 3. Update the task
         let updated_name = format!("Updated Task {}", uuid::Uuid::new_v4());
-        let body = format!("name={}&status=done&date=2024-01-01", updated_name);
+        let updated_remarks = "Updated remarks here";
+        let body = format!(
+            "name={}&status=done&date=2024-01-01&remarks={}",
+            updated_name, updated_remarks
+        );
         let response = client
             .post(format!("/task/{}", id))
             .header(ContentType::Form)
@@ -329,6 +362,7 @@ mod tests {
         let response = client.get(format!("/task/{}", id)).dispatch();
         let body = response.into_string().unwrap();
         assert!(body.contains(&updated_name));
+        assert!(body.contains(updated_remarks));
         assert!(body.contains("Done"));
         assert!(body.contains("2024-01-01"));
     }
