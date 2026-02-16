@@ -26,6 +26,21 @@ pub enum TaskStatus {
     Done,
 }
 
+#[derive(Debug, FromFormField, Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[serde(crate = "rocket::serde", rename_all = "lowercase")]
+pub enum SortColumn {
+    Name,
+    Status,
+    Date,
+}
+
+#[derive(Debug, FromFormField, Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[serde(crate = "rocket::serde", rename_all = "lowercase")]
+pub enum SortDirection {
+    Asc,
+    Desc,
+}
+
 impl std::fmt::Display for TaskStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -61,10 +76,26 @@ pub struct Task {
 }
 
 impl Task {
-    pub async fn all(db: &Db) -> Result<Vec<Task>, rusqlite::Error> {
-        db.run(|conn| {
-            let mut stmt =
-                conn.prepare("SELECT id, name, status, date FROM tasks ORDER BY date DESC")?;
+    pub async fn all(
+        db: &Db,
+        sort_by: SortColumn,
+        order: SortDirection,
+    ) -> Result<Vec<Task>, rusqlite::Error> {
+        db.run(move |conn| {
+            let sql_column = match sort_by {
+                SortColumn::Name => "name",
+                SortColumn::Status => "status",
+                SortColumn::Date => "date",
+            };
+            let sql_order = match order {
+                SortDirection::Asc => "ASC",
+                SortDirection::Desc => "DESC",
+            };
+            let query = format!(
+                "SELECT id, name, status, date FROM tasks ORDER BY {} {}",
+                sql_column, sql_order
+            );
+            let mut stmt = conn.prepare(&query)?;
             let task_iter = stmt.query_map([], |row| {
                 Ok(Task {
                     id: Some(row.get(0)?),
@@ -127,22 +158,59 @@ impl Task {
     }
 }
 
-#[get("/")]
-async fn index(db: Db) -> Result<Template, Status> {
-    let tasks = Task::all(&db)
+#[get("/?<sort_by>&<order>")]
+async fn index(
+    db: Db,
+    sort_by: Option<SortColumn>,
+    order: Option<SortDirection>,
+) -> Result<Template, Status> {
+    let sort_by = sort_by.unwrap_or(SortColumn::Date);
+    let order = order.unwrap_or(SortDirection::Desc);
+
+    let tasks = Task::all(&db, sort_by, order)
         .await
         .map_err(|_| Status::InternalServerError)?;
+
+    let next_order_name = if sort_by == SortColumn::Name && order == SortDirection::Asc {
+        SortDirection::Desc
+    } else {
+        SortDirection::Asc
+    };
+
+    let next_order_status = if sort_by == SortColumn::Status && order == SortDirection::Asc {
+        SortDirection::Desc
+    } else {
+        SortDirection::Asc
+    };
+
+    let next_order_date = if sort_by == SortColumn::Date && order == SortDirection::Asc {
+        SortDirection::Desc
+    } else {
+        SortDirection::Asc
+    };
+
     Ok(Template::render(
         "index",
         context! {
             tasks: tasks,
+            sort_by: sort_by,
+            order: order,
+            next_order_name: next_order_name,
+            next_order_status: next_order_status,
+            next_order_date: next_order_date,
         },
     ))
 }
 
-#[get("/tasks")]
-async fn get_tasks(db: Db) -> Result<Json<Vec<Task>>, Status> {
-    let tasks = Task::all(&db)
+#[get("/tasks?<sort_by>&<order>")]
+async fn get_tasks(
+    db: Db,
+    sort_by: Option<SortColumn>,
+    order: Option<SortDirection>,
+) -> Result<Json<Vec<Task>>, Status> {
+    let sort_by = sort_by.unwrap_or(SortColumn::Date);
+    let order = order.unwrap_or(SortDirection::Desc);
+    let tasks = Task::all(&db, sort_by, order)
         .await
         .map_err(|_| Status::InternalServerError)?;
     Ok(Json(tasks))
@@ -517,5 +585,53 @@ mod tests {
 
         // If this passes (200 OK), then JSON validation is missing
         assert_eq!(response.status(), Status::UnprocessableEntity);
+    }
+
+    #[test]
+    fn test_sorting_by_name() {
+        let client = Client::tracked(rocket()).expect("valid rocket instance");
+        let uuid = uuid::Uuid::new_v4().to_string();
+        let name_a = format!("A Task {}", uuid);
+        let name_b = format!("B Task {}", uuid);
+
+        client
+            .post("/tasks")
+            .header(ContentType::JSON)
+            .body(format!(
+                r#"{{"name": "{}", "status": "new", "date": "2023-01-01"}}"#,
+                name_a
+            ))
+            .dispatch();
+        client
+            .post("/tasks")
+            .header(ContentType::JSON)
+            .body(format!(
+                r#"{{"name": "{}", "status": "new", "date": "2023-01-01"}}"#,
+                name_b
+            ))
+            .dispatch();
+
+        // 1. Get sorted by name ASC
+        let response = client.get("/tasks?sort_by=name&order=asc").dispatch();
+        let tasks: Vec<Task> = response.into_json().expect("valid JSON tasks");
+
+        let filtered_tasks: Vec<&Task> = tasks
+            .iter()
+            .filter(|t| t.name == name_a || t.name == name_b)
+            .collect();
+        assert_eq!(filtered_tasks.len(), 2);
+        assert_eq!(filtered_tasks[0].name, name_a);
+        assert_eq!(filtered_tasks[1].name, name_b);
+
+        // 2. Get sorted by name DESC
+        let response = client.get("/tasks?sort_by=name&order=desc").dispatch();
+        let tasks: Vec<Task> = response.into_json().expect("valid JSON tasks");
+        let filtered_tasks: Vec<&Task> = tasks
+            .iter()
+            .filter(|t| t.name == name_a || t.name == name_b)
+            .collect();
+        assert_eq!(filtered_tasks.len(), 2);
+        assert_eq!(filtered_tasks[0].name, name_b);
+        assert_eq!(filtered_tasks[1].name, name_a);
     }
 }
