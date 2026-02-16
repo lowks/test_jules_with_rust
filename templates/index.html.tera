@@ -9,9 +9,20 @@
 </head>
 <body class="bg-gray-50 font-sans">
     <div class="container mx-auto px-4 py-8 max-w-4xl">
-        <header class="mb-10 text-center">
-            <h1 class="text-4xl font-extrabold text-gray-900 mb-2">Task Tracker</h1>
-            <p class="text-lg text-gray-600">Manage your daily tasks with ease</p>
+        <header class="mb-10 flex flex-col md:flex-row justify-between items-start md:items-center space-y-4 md:space-y-0">
+            <div class="text-left">
+                <h1 class="text-3xl md:text-4xl font-extrabold text-gray-900 mb-2">Task Tracker</h1>
+                <p class="text-base md:text-lg text-gray-600">Manage your daily tasks with ease</p>
+            </div>
+            <div class="flex flex-wrap items-center gap-3 md:gap-4">
+                <span class="text-gray-700 font-medium whitespace-nowrap text-sm md:text-base">Hello, <span class="text-blue-600">{{ user.username }}</span></span>
+                {% if user.username == "admin" %}
+                <a href="/user_admin" class="text-xs md:text-sm text-blue-600 hover:underline">User Admin</a>
+                {% endif %}
+                <form action="/logout" method="post" class="inline">
+                    <button type="submit" class="text-xs md:text-sm text-white bg-gray-600 hover:bg-gray-700 px-3 py-1.5 rounded-lg transition-colors">Logout</button>
+                </form>
+            </div>
         </header>
 
         <!-- Task Form -->

@@ -15,7 +15,7 @@ echo "Step 3: Building the project..."
 cargo build --verbose
 
 echo "Step 4: Running backend tests..."
-cargo test --verbose
+cargo test --verbose -- --test-threads=1
 
 echo "Step 5: Running UI tests..."
 # Check for Python and Playwright
