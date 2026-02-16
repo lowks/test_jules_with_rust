@@ -755,17 +755,15 @@ pub fn rocket() -> _ {
         .attach(Template::fairing())
         .attach(AdHoc::on_ignite("Run Migrations", |rocket| async {
             let db = Db::get_one(&rocket).await.expect("database connection");
-            db.run(|conn| {
-                match embedded::migrations::runner().run(conn) {
-                    Ok(report) => {
-                        let applied = report.applied_migrations().len();
-                        if applied > 0 {
-                            println!("Applied {} migrations", applied);
-                        }
+            db.run(|conn| match embedded::migrations::runner().run(conn) {
+                Ok(report) => {
+                    let applied = report.applied_migrations().len();
+                    if applied > 0 {
+                        println!("Applied {} migrations", applied);
                     }
-                    Err(e) => {
-                        panic!("Failed to run database migrations: {}", e);
-                    }
+                }
+                Err(e) => {
+                    panic!("Failed to run database migrations: {}", e);
                 }
             })
             .await;
