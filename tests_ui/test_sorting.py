@@ -19,6 +19,26 @@ def test_sorting():
             page.click("button[type='submit']")
             page.wait_for_load_state("networkidle")
 
+            # Create a unique user for this test to avoid pagination issues
+            uid = str(int(time.time()))
+            test_username = f"user_{uid}"
+            print(f"Creating test user: {test_username}")
+            page.goto("http://127.0.0.1:8000/user_admin/new")
+            page.fill("#username", test_username)
+            page.fill("#password", "password")
+            page.click("button[type='submit']")
+            page.wait_for_load_state("networkidle")
+
+            print("Logging out...")
+            page.click("button:has-text('Logout')")
+            page.wait_for_load_state("networkidle")
+
+            print(f"Logging in as {test_username}...")
+            page.fill("#username", test_username)
+            page.fill("#password", "password")
+            page.click("button[type='submit']")
+            page.wait_for_load_state("networkidle")
+
             # Add some tasks to ensure we have something to sort
             uid = str(int(time.time()))
             name_a = f"Alpha {uid}"

@@ -1371,7 +1371,9 @@ mod tests {
             .dispatch();
 
         // 1. Get sorted by name ASC
-        let response = client.get("/tasks?sort_by=name&order=asc&limit=100").dispatch();
+        let response = client
+            .get("/tasks?sort_by=name&order=asc&limit=100")
+            .dispatch();
         let tasks: Vec<Task> = response.into_json().expect("valid JSON tasks");
 
         let filtered_tasks: Vec<&Task> = tasks
@@ -1383,7 +1385,9 @@ mod tests {
         assert_eq!(filtered_tasks[1].name, name_b);
 
         // 2. Get sorted by name DESC
-        let response = client.get("/tasks?sort_by=name&order=desc&limit=100").dispatch();
+        let response = client
+            .get("/tasks?sort_by=name&order=desc&limit=100")
+            .dispatch();
         let tasks: Vec<Task> = response.into_json().expect("valid JSON tasks");
         let filtered_tasks: Vec<&Task> = tasks
             .iter()
