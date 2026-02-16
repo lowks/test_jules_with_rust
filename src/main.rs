@@ -277,6 +277,8 @@ impl Task {
         user_id: i64,
         sort_by: SortColumn,
         order: SortDirection,
+        limit: i64,
+        offset: i64,
     ) -> Result<Vec<Task>, rusqlite::Error> {
         db.run(move |conn| {
             let sql_column = match sort_by {
@@ -289,11 +291,11 @@ impl Task {
                 SortDirection::Desc => "DESC",
             };
             let query = format!(
-                "SELECT id, name, status, date, user_id FROM tasks WHERE user_id = ? ORDER BY {} {}",
+                "SELECT id, name, status, date, user_id FROM tasks WHERE user_id = ? ORDER BY {} {} LIMIT ? OFFSET ?",
                 sql_column, sql_order
             );
             let mut stmt = conn.prepare(&query)?;
-            let task_iter = stmt.query_map([user_id], |row| {
+            let task_iter = stmt.query_map(rusqlite::params![user_id, limit, offset], |row| {
                 Ok(Task {
                     id: Some(row.get(0)?),
                     name: row.get(1)?,
@@ -304,6 +306,17 @@ impl Task {
             })?;
 
             task_iter.collect::<Result<Vec<Task>, rusqlite::Error>>()
+        })
+        .await
+    }
+
+    pub async fn count(db: &Db, user_id: i64) -> Result<i64, rusqlite::Error> {
+        db.run(move |conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM tasks WHERE user_id = ?",
+                [user_id],
+                |row| row.get(0),
+            )
         })
         .await
     }
@@ -417,18 +430,27 @@ async fn logout(cookies: &rocket::http::CookieJar<'_>) -> Redirect {
     Redirect::to("/login")
 }
 
-#[get("/?<sort_by>&<order>")]
+#[get("/?<sort_by>&<order>&<page>")]
 async fn index(
     db: Db,
     auth: AuthUser,
     sort_by: Option<SortColumn>,
     order: Option<SortDirection>,
+    page: Option<i64>,
     csrf_token: CsrfToken,
 ) -> Result<Template, Status> {
     let sort_by = sort_by.unwrap_or(SortColumn::Date);
     let order = order.unwrap_or(SortDirection::Desc);
+    let page = page.unwrap_or(1).max(1);
+    let limit = 10;
+    let offset = (page - 1) * limit;
 
-    let tasks = Task::all(&db, auth.0.id, sort_by, order)
+    let total_tasks = Task::count(&db, auth.0.id)
+        .await
+        .map_err(|_| Status::InternalServerError)?;
+    let total_pages = (total_tasks as f64 / limit as f64).ceil() as i64;
+
+    let tasks = Task::all(&db, auth.0.id, sort_by, order, limit, offset)
         .await
         .map_err(|_| Status::InternalServerError)?;
 
@@ -457,6 +479,8 @@ async fn index(
             tasks: tasks,
             sort_by: sort_by,
             order: order,
+            page: page,
+            total_pages: total_pages,
             next_order_name: next_order_name,
             next_order_status: next_order_status,
             next_order_date: next_order_date,
@@ -465,16 +489,22 @@ async fn index(
     ))
 }
 
-#[get("/tasks?<sort_by>&<order>")]
+#[get("/tasks?<sort_by>&<order>&<page>&<limit>")]
 async fn get_tasks(
     db: Db,
     auth: AuthUser,
     sort_by: Option<SortColumn>,
     order: Option<SortDirection>,
+    page: Option<i64>,
+    limit: Option<i64>,
 ) -> Result<Json<Vec<Task>>, Status> {
     let sort_by = sort_by.unwrap_or(SortColumn::Date);
     let order = order.unwrap_or(SortDirection::Desc);
-    let tasks = Task::all(&db, auth.0.id, sort_by, order)
+    let page = page.unwrap_or(1).max(1);
+    let limit = limit.unwrap_or(10);
+    let offset = (page - 1) * limit;
+
+    let tasks = Task::all(&db, auth.0.id, sort_by, order, limit, offset)
         .await
         .map_err(|_| Status::InternalServerError)?;
     Ok(Json(tasks))
@@ -827,6 +857,74 @@ mod tests {
     }
 
     #[test]
+    fn test_pagination() {
+        let client = Client::tracked(rocket()).expect("valid rocket instance");
+        let admin_csrf = login(&client, "admin", "admin");
+        let username = format!("u{}", uuid::Uuid::new_v4().to_string().replace("-", ""));
+
+        // 1. Create a new user to have a clean task list
+        client
+            .post("/user_admin")
+            .header(ContentType::Form)
+            .body(format!(
+                "username={}&password=password&csrf_token={}",
+                username, admin_csrf
+            ))
+            .dispatch();
+
+        client.post("/logout").dispatch();
+        let csrf_token = login(&client, &username, "password");
+
+        // 2. Create 15 tasks
+        for i in 1..=15 {
+            let task_name = format!("Task {:02}", i);
+            client
+                .post("/tasks")
+                .header(ContentType::JSON)
+                .header(Header::new("X-CSRF-Token", csrf_token.clone()))
+                .body(format!(
+                    r#"{{"name": "{}", "status": "new", "date": "2023-10-{:02}"}}"#,
+                    task_name, i
+                ))
+                .dispatch();
+        }
+
+        // 3. Get Page 1 (should have 10 tasks)
+        // Sort by date ASC to make it predictable: Task 01 to 10
+        let response = client
+            .get("/tasks?page=1&limit=10&sort_by=date&order=asc")
+            .dispatch();
+        let tasks: Vec<Task> = response.into_json().expect("valid JSON tasks");
+        assert_eq!(tasks.len(), 10);
+        assert_eq!(tasks[0].name, "Task 01");
+        assert_eq!(tasks[9].name, "Task 10");
+
+        // 4. Get Page 2 (should have 5 tasks)
+        let response = client
+            .get("/tasks?page=2&limit=10&sort_by=date&order=asc")
+            .dispatch();
+        let tasks: Vec<Task> = response.into_json().expect("valid JSON tasks");
+        assert_eq!(tasks.len(), 5);
+        assert_eq!(tasks[0].name, "Task 11");
+        assert_eq!(tasks[4].name, "Task 15");
+
+        // 5. Check HTML for pagination controls
+        let response = client.get("/?page=1&sort_by=date&order=asc").dispatch();
+        let body = response.into_string().unwrap();
+        assert!(body.contains("Showing page"));
+        assert!(body.contains(">1</span>"));
+        assert!(body.contains(">2</span>"));
+        assert!(body.contains("Next"));
+
+        let response = client.get("/?page=2&sort_by=date&order=asc").dispatch();
+        let body = response.into_string().unwrap();
+        assert!(body.contains("Showing page"));
+        assert!(body.contains(">2</span>"));
+        assert!(body.contains(">2</span>")); // total pages
+        assert!(body.contains("Prev"));
+    }
+
+    #[test]
     fn test_login_and_index_page() {
         let client = Client::tracked(rocket()).expect("valid rocket instance");
 
@@ -866,7 +964,7 @@ mod tests {
         assert_eq!(task.name, task_name);
 
         // 2. Get tasks again and verify it contains our new task
-        let response = client.get("/tasks").dispatch();
+        let response = client.get("/tasks?limit=100").dispatch();
         assert_eq!(response.status(), Status::Ok);
         let tasks: Vec<Task> = response.into_json().expect("valid JSON tasks");
         assert!(tasks.iter().any(|t| t.name == task_name));
@@ -893,7 +991,7 @@ mod tests {
         assert_eq!(response.status(), Status::SeeOther);
 
         // 2. Verify it appears in JSON list
-        let response = client.get("/tasks").dispatch();
+        let response = client.get("/tasks?limit=100").dispatch();
         let tasks: Vec<Task> = response.into_json().expect("valid JSON tasks");
         assert!(tasks
             .iter()
@@ -1180,11 +1278,12 @@ mod tests {
     fn test_user_admin_crud() {
         let client = Client::tracked(rocket()).expect("valid rocket instance");
         let csrf_token = login(&client, "admin", "admin");
+        let username = format!("u{}", uuid::Uuid::new_v4().to_string().replace("-", ""));
 
         // 1. Create user
         let body = format!(
-            "username=cruduser&password=password&csrf_token={}",
-            csrf_token
+            "username={}&password=password&csrf_token={}",
+            username, csrf_token
         );
         let response = client
             .post("/user_admin")
@@ -1193,24 +1292,39 @@ mod tests {
             .dispatch();
         assert_eq!(response.status(), Status::SeeOther);
 
-        // 2. List users
+        // 2. List users and find ID
         let response = client.get("/user_admin").dispatch();
         assert_eq!(response.status(), Status::Ok);
-        assert!(response.into_string().unwrap().contains("cruduser"));
+        let body = response.into_string().unwrap();
+        assert!(body.contains(&username));
+
+        // Find the user ID in the HTML. It's in a <td> before the username.
+        // Very basic extraction:
+        let user_id = body
+            .split(&username)
+            .next()
+            .unwrap()
+            .rsplit("px-6 py-4\">")
+            .next()
+            .unwrap()
+            .split('<')
+            .next()
+            .unwrap()
+            .trim();
 
         // 3. Edit user
-        // We need the ID. Let's find it in the DB.
-        // For simplicity, we can just check if the edit page for a user exists.
-        // We'll assume the second user created has ID 2 (admin is 1).
-        let response = client.get("/user_admin/2/edit").dispatch();
+        let response = client
+            .get(format!("/user_admin/{}/edit", user_id))
+            .dispatch();
         assert_eq!(response.status(), Status::Ok);
 
+        let updated_username = format!("{}_upd", username);
         let body = format!(
-            "username=cruduser_updated&password=&csrf_token={}",
-            csrf_token
+            "username={}&password=&csrf_token={}",
+            updated_username, csrf_token
         );
         let response = client
-            .post("/user_admin/2")
+            .post(format!("/user_admin/{}", user_id))
             .header(ContentType::Form)
             .body(body)
             .dispatch();
@@ -1219,14 +1333,14 @@ mod tests {
         // 4. Delete user
         let body = format!("csrf_token={}", csrf_token);
         let response = client
-            .post("/user_admin/2/delete")
+            .post(format!("/user_admin/{}/delete", user_id))
             .header(ContentType::Form)
             .body(body)
             .dispatch();
         assert_eq!(response.status(), Status::SeeOther);
 
         let response = client.get("/user_admin").dispatch();
-        assert!(!response.into_string().unwrap().contains("cruduser_updated"));
+        assert!(!response.into_string().unwrap().contains(&updated_username));
     }
 
     #[test]
@@ -1257,7 +1371,9 @@ mod tests {
             .dispatch();
 
         // 1. Get sorted by name ASC
-        let response = client.get("/tasks?sort_by=name&order=asc").dispatch();
+        let response = client
+            .get("/tasks?sort_by=name&order=asc&limit=100")
+            .dispatch();
         let tasks: Vec<Task> = response.into_json().expect("valid JSON tasks");
 
         let filtered_tasks: Vec<&Task> = tasks
@@ -1269,7 +1385,9 @@ mod tests {
         assert_eq!(filtered_tasks[1].name, name_b);
 
         // 2. Get sorted by name DESC
-        let response = client.get("/tasks?sort_by=name&order=desc").dispatch();
+        let response = client
+            .get("/tasks?sort_by=name&order=desc&limit=100")
+            .dispatch();
         let tasks: Vec<Task> = response.into_json().expect("valid JSON tasks");
         let filtered_tasks: Vec<&Task> = tasks
             .iter()
