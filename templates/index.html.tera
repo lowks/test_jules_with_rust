@@ -54,9 +54,60 @@
                 <table class="w-full text-sm text-left text-gray-500">
                     <thead class="text-xs text-gray-700 uppercase bg-gray-50">
                         <tr>
-                            <th scope="col" class="px-6 py-3">Task Name</th>
-                            <th scope="col" class="px-6 py-3 text-center">Status</th>
-                            <th scope="col" class="px-6 py-3 text-center">Date</th>
+                            <th scope="col" class="px-6 py-3">
+                                <a href="/?sort_by=name&order={{ next_order_name }}" class="flex items-center hover:text-blue-600 transition-colors">
+                                    Task Name
+                                    {% if sort_by == "name" %}
+                                    <span class="ml-1 text-blue-600">
+                                        {% if order == "asc" %}
+                                        <svg class="w-3 h-3" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 10 6">
+                                            <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5 5 1 1 5"/>
+                                        </svg>
+                                        {% else %}
+                                        <svg class="w-3 h-3" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 10 6">
+                                            <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m1 1 4 4 4-4"/>
+                                        </svg>
+                                        {% endif %}
+                                    </span>
+                                    {% endif %}
+                                </a>
+                            </th>
+                            <th scope="col" class="px-6 py-3">
+                                <a href="/?sort_by=status&order={{ next_order_status }}" class="flex items-center justify-center hover:text-blue-600 transition-colors">
+                                    Status
+                                    {% if sort_by == "status" %}
+                                    <span class="ml-1 text-blue-600">
+                                        {% if order == "asc" %}
+                                        <svg class="w-3 h-3" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 10 6">
+                                            <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5 5 1 1 5"/>
+                                        </svg>
+                                        {% else %}
+                                        <svg class="w-3 h-3" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 10 6">
+                                            <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m1 1 4 4 4-4"/>
+                                        </svg>
+                                        {% endif %}
+                                    </span>
+                                    {% endif %}
+                                </a>
+                            </th>
+                            <th scope="col" class="px-6 py-3">
+                                <a href="/?sort_by=date&order={{ next_order_date }}" class="flex items-center justify-center hover:text-blue-600 transition-colors">
+                                    Date
+                                    {% if sort_by == "date" %}
+                                    <span class="ml-1 text-blue-600">
+                                        {% if order == "asc" %}
+                                        <svg class="w-3 h-3" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 10 6">
+                                            <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5 5 1 1 5"/>
+                                        </svg>
+                                        {% else %}
+                                        <svg class="w-3 h-3" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 10 6">
+                                            <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m1 1 4 4 4-4"/>
+                                        </svg>
+                                        {% endif %}
+                                    </span>
+                                    {% endif %}
+                                </a>
+                            </th>
                             <th scope="col" class="px-6 py-3 text-right">Actions</th>
                         </tr>
                     </thead>
