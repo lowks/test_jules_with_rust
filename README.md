@@ -94,6 +94,16 @@ COPY --from=builder /usr/src/app/Rocket.toml /Rocket.toml
 CMD ["app"]
 ```
 
+## Deployment
+
+To serve the application behind a reverse proxy, you can find example configuration files for Nginx and Apache in the `deployment/` directory.
+
+### Nginx
+The `deployment/nginx.conf` file provides a standard configuration for Nginx. You should update the `server_name` and the path to the `static` directory as needed.
+
+### Apache
+The `deployment/apache.conf` file provides a VirtualHost configuration for Apache. Ensure that the `mod_proxy` and `mod_proxy_http` modules are enabled. You should update the `ServerName` and the path to the `static` directory as needed.
+
 ## License
 
 MIT
