@@ -94,6 +94,16 @@ COPY --from=builder /usr/src/app/Rocket.toml /Rocket.toml
 CMD ["app"]
 ```
 
+## Deployment
+
+To serve the application behind a reverse proxy with HTTPS, you can find example configuration files for Nginx and Apache in the `deployment/` directory. These configurations include HTTP to HTTPS redirects and SSL/TLS settings.
+
+### Nginx
+The `deployment/nginx.conf` file provides a configuration for Nginx with HTTPS support. You should update the `server_name`, SSL certificate paths, and the path to the `static` directory as needed.
+
+### Apache
+The `deployment/apache.conf` file provides a VirtualHost configuration for Apache with HTTPS support. Ensure that the `mod_ssl`, `mod_proxy`, and `mod_proxy_http` modules are enabled. You should update the `ServerName`, SSL certificate paths, and the path to the `static` directory as needed.
+
 ## License
 
 MIT
