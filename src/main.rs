@@ -754,20 +754,21 @@ pub fn rocket() -> _ {
         .attach(SecurityHeaders)
         .attach(Template::fairing())
         .attach(AdHoc::on_ignite("Run Migrations", |rocket| async {
-            let db = match Db::get_one(&rocket).await {
-                Some(db) => db,
-                None => return rocket,
-            };
-            let _ = db
-                .run(|conn| {
-                    embedded::migrations::runner().run(conn).map_err(|e| {
-                        eprintln!("Migration error: {}", e);
-                        rusqlite::Error::ExecuteReturnedResults // Dummy error
-                    })?;
-
-                    Ok::<(), rusqlite::Error>(())
-                })
-                .await;
+            let db = Db::get_one(&rocket).await.expect("database connection");
+            db.run(|conn| {
+                match embedded::migrations::runner().run(conn) {
+                    Ok(report) => {
+                        let applied = report.applied_migrations().len();
+                        if applied > 0 {
+                            println!("Applied {} migrations", applied);
+                        }
+                    }
+                    Err(e) => {
+                        panic!("Failed to run database migrations: {}", e);
+                    }
+                }
+            })
+            .await;
             rocket
         }))
         .mount("/static", FileServer::from(relative!("static")))
