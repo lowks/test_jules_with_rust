@@ -1,8 +1,15 @@
 use rocket::{
     fairing::AdHoc,
-    get, launch, post, routes,
+    fairing::{Fairing, Info, Kind},
+    form::FromFormField,
+    fs::{relative, FileServer},
+    get,
+    http::{Header, Status},
+    launch, post,
+    response::Redirect,
+    routes,
     serde::{json::Json, Deserialize, Serialize},
-    FromForm,
+    FromForm, Request, Response,
 };
 use rocket_dyn_templates::{context, Template};
 use rocket_sync_db_pools::{database, rusqlite};
@@ -10,47 +17,75 @@ use rocket_sync_db_pools::{database, rusqlite};
 #[database("sqlite_db")]
 pub struct Db(rusqlite::Connection);
 
+#[derive(Debug, FromFormField, Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[serde(crate = "rocket::serde", rename_all = "lowercase")]
+pub enum TaskStatus {
+    #[field(value = "new")]
+    New,
+    #[field(value = "done")]
+    Done,
+}
+
+impl std::fmt::Display for TaskStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TaskStatus::New => write!(f, "new"),
+            TaskStatus::Done => write!(f, "done"),
+        }
+    }
+}
+
+impl rusqlite::types::ToSql for TaskStatus {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(self.to_string().into())
+    }
+}
+
+impl rusqlite::types::FromSql for TaskStatus {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        value.as_str().map(|s| match s {
+            "done" => TaskStatus::Done,
+            _ => TaskStatus::New,
+        })
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, FromForm, Clone, PartialEq)]
 #[serde(crate = "rocket::serde")]
 pub struct Task {
     pub id: Option<i64>,
+    #[field(validate = len(1..255))]
     pub name: String,
-    pub status: String, // "new" or "done"
-    pub date: String,   // ISO date string from date picker
+    pub status: TaskStatus,
+    pub date: String, // ISO date string from date picker
 }
 
 impl Task {
-    pub async fn all(db: &Db) -> Vec<Task> {
+    pub async fn all(db: &Db) -> Result<Vec<Task>, rusqlite::Error> {
         db.run(|conn| {
-            let mut stmt = conn
-                .prepare("SELECT id, name, status, date FROM tasks ORDER BY date DESC")
-                .expect("failed to prepare");
-            let task_iter = stmt
-                .query_map([], |row| {
-                    Ok(Task {
-                        id: Some(row.get(0)?),
-                        name: row.get(1)?,
-                        status: row.get(2)?,
-                        date: row.get(3)?,
-                    })
+            let mut stmt =
+                conn.prepare("SELECT id, name, status, date FROM tasks ORDER BY date DESC")?;
+            let task_iter = stmt.query_map([], |row| {
+                Ok(Task {
+                    id: Some(row.get(0)?),
+                    name: row.get(1)?,
+                    status: row.get(2)?,
+                    date: row.get(3)?,
                 })
-                .expect("failed to query map");
+            })?;
 
-            task_iter
-                .map(|r| r.expect("failed to get row"))
-                .collect::<Vec<Task>>()
+            task_iter.collect::<Result<Vec<Task>, rusqlite::Error>>()
         })
         .await
     }
 
-    pub async fn insert(db: &Db, task: Task) -> i64 {
+    pub async fn insert(db: &Db, task: Task) -> Result<i64, rusqlite::Error> {
         db.run(move |conn| {
             conn.execute(
                 "INSERT INTO tasks (name, status, date) VALUES (?, ?, ?)",
-                [task.name, task.status, task.date],
-            )
-            .expect("failed to insert");
-            conn.last_insert_rowid()
+                rusqlite::params![task.name, task.status, task.date],
+            )?;
+            Ok(conn.last_insert_rowid())
         })
         .await
     }
@@ -74,56 +109,64 @@ impl Task {
         .await
     }
 
-    pub async fn update(db: &Db, id: i64, task: Task) -> bool {
+    pub async fn update(db: &Db, id: i64, task: Task) -> Result<bool, rusqlite::Error> {
         db.run(move |conn| {
-            conn.execute(
+            Ok(conn.execute(
                 "UPDATE tasks SET name = ?, status = ?, date = ? WHERE id = ?",
                 rusqlite::params![task.name, task.status, task.date, id],
-            )
-            .expect("failed to update")
-                > 0
+            )? > 0)
         })
         .await
     }
 
-    pub async fn delete(db: &Db, id: i64) -> bool {
+    pub async fn delete(db: &Db, id: i64) -> Result<bool, rusqlite::Error> {
         db.run(move |conn| {
-            conn.execute("DELETE FROM tasks WHERE id = ?", [id])
-                .expect("failed to delete")
-                > 0
+            Ok(conn.execute("DELETE FROM tasks WHERE id = ?", rusqlite::params![id])? > 0)
         })
         .await
     }
 }
 
 #[get("/")]
-async fn index(db: Db) -> Template {
-    let tasks = Task::all(&db).await;
-    Template::render(
+async fn index(db: Db) -> Result<Template, Status> {
+    let tasks = Task::all(&db)
+        .await
+        .map_err(|_| Status::InternalServerError)?;
+    Ok(Template::render(
         "index",
         context! {
             tasks: tasks,
         },
-    )
+    ))
 }
 
 #[get("/tasks")]
-async fn get_tasks(db: Db) -> Json<Vec<Task>> {
-    Json(Task::all(&db).await)
+async fn get_tasks(db: Db) -> Result<Json<Vec<Task>>, Status> {
+    let tasks = Task::all(&db)
+        .await
+        .map_err(|_| Status::InternalServerError)?;
+    Ok(Json(tasks))
 }
 
 #[post("/task", data = "<task>")]
-async fn create_task_form(db: Db, task: rocket::form::Form<Task>) -> rocket::response::Redirect {
-    Task::insert(&db, task.into_inner()).await;
-    rocket::response::Redirect::to("/")
+async fn create_task_form(db: Db, task: rocket::form::Form<Task>) -> Result<Redirect, Status> {
+    Task::insert(&db, task.into_inner())
+        .await
+        .map_err(|_| Status::InternalServerError)?;
+    Ok(Redirect::to("/"))
 }
 
 #[post("/tasks", format = "json", data = "<task>")]
-async fn create_task_json(db: Db, task: Json<Task>) -> Json<Task> {
+async fn create_task_json(db: Db, task: Json<Task>) -> Result<Json<Task>, Status> {
     let mut task_obj = task.into_inner();
-    let id = Task::insert(&db, task_obj.clone()).await;
+    if task_obj.name.is_empty() || task_obj.name.len() > 255 {
+        return Err(Status::UnprocessableEntity);
+    }
+    let id = Task::insert(&db, task_obj.clone())
+        .await
+        .map_err(|_| Status::InternalServerError)?;
     task_obj.id = Some(id);
-    Json(task_obj)
+    Ok(Json(task_obj))
 }
 
 #[get("/task/<id>")]
@@ -141,43 +184,78 @@ async fn edit_task(db: Db, id: i64) -> Option<Template> {
 }
 
 #[post("/task/<id>", data = "<task>")]
-async fn update_task(
-    db: Db,
-    id: i64,
-    task: rocket::form::Form<Task>,
-) -> rocket::response::Redirect {
-    Task::update(&db, id, task.into_inner()).await;
-    rocket::response::Redirect::to("/")
+async fn update_task(db: Db, id: i64, task: rocket::form::Form<Task>) -> Result<Redirect, Status> {
+    Task::update(&db, id, task.into_inner())
+        .await
+        .map_err(|_| Status::InternalServerError)?;
+    Ok(Redirect::to("/"))
 }
 
 #[post("/task/<id>/delete")]
-async fn delete_task(db: Db, id: i64) -> rocket::response::Redirect {
-    Task::delete(&db, id).await;
-    rocket::response::Redirect::to("/")
+async fn delete_task(db: Db, id: i64) -> Result<Redirect, Status> {
+    Task::delete(&db, id)
+        .await
+        .map_err(|_| Status::InternalServerError)?;
+    Ok(Redirect::to("/"))
+}
+
+pub struct SecurityHeaders;
+
+#[rocket::async_trait]
+impl Fairing for SecurityHeaders {
+    fn info(&self) -> Info {
+        Info {
+            name: "Security Headers",
+            kind: Kind::Response,
+        }
+    }
+
+    async fn on_response<'r>(&self, _request: &'r Request<'_>, response: &mut Response<'r>) {
+        response.set_header(Header::new("Content-Security-Policy", "default-src 'self'; script-src 'self' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; img-src 'self'; font-src https://cdnjs.cloudflare.com;"));
+        response.set_header(Header::new(
+            "Strict-Transport-Security",
+            "max-age=31536000; includeSubDomains",
+        ));
+        response.set_header(Header::new("X-Frame-Options", "DENY"));
+        response.set_header(Header::new("X-Content-Type-Options", "nosniff"));
+        response.set_header(Header::new(
+            "Referrer-Policy",
+            "strict-origin-when-cross-origin",
+        ));
+        response.set_header(Header::new(
+            "Permissions-Policy",
+            "geolocation=(), camera=(), microphone=()",
+        ));
+    }
 }
 
 #[launch]
 pub fn rocket() -> _ {
     rocket::build()
         .attach(Db::fairing())
+        .attach(SecurityHeaders)
         .attach(Template::fairing())
         .attach(AdHoc::on_ignite("Run Migrations", |rocket| async {
-            let db = Db::get_one(&rocket).await.expect("database connection");
-            db.run(|conn| {
-                conn.execute(
-                    "CREATE TABLE IF NOT EXISTS tasks (
+            let db = match Db::get_one(&rocket).await {
+                Some(db) => db,
+                None => return rocket,
+            };
+            let _ = db
+                .run(|conn| {
+                    conn.execute(
+                        "CREATE TABLE IF NOT EXISTS tasks (
                         id INTEGER PRIMARY KEY,
                         name TEXT NOT NULL,
-                        status TEXT NOT NULL,
+                        status TEXT NOT NULL CHECK (status IN ('new', 'done')),
                         date TEXT NOT NULL
                     )",
-                    [],
-                )
-                .expect("failed to create table");
-            })
-            .await;
+                        [],
+                    )
+                })
+                .await;
             rocket
         }))
+        .mount("/static", FileServer::from(relative!("static")))
         .mount(
             "/",
             routes![
@@ -265,7 +343,7 @@ mod tests {
         let tasks: Vec<Task> = response.into_json().expect("valid JSON tasks");
         assert!(tasks
             .iter()
-            .any(|t| t.name == task_name && t.status == "done"));
+            .any(|t| t.name == task_name && t.status == TaskStatus::Done));
     }
 
     #[test]
@@ -364,5 +442,80 @@ mod tests {
         let client = Client::tracked(rocket()).expect("valid rocket instance");
         let response = client.get("/task/999999").dispatch();
         assert_eq!(response.status(), Status::NotFound);
+    }
+
+    #[test]
+    fn test_security_headers() {
+        let client = Client::tracked(rocket()).expect("valid rocket instance");
+        let response = client.get("/").dispatch();
+        assert_eq!(response.status(), Status::Ok);
+
+        let headers = response.headers();
+        assert!(headers.get_one("Content-Security-Policy").is_some());
+        assert!(headers.get_one("Strict-Transport-Security").is_some());
+        assert_eq!(headers.get_one("X-Frame-Options"), Some("DENY"));
+        assert_eq!(headers.get_one("X-Content-Type-Options"), Some("nosniff"));
+        assert_eq!(
+            headers.get_one("Referrer-Policy"),
+            Some("strict-origin-when-cross-origin")
+        );
+    }
+
+    #[test]
+    fn test_input_validation_name_too_short() {
+        let client = Client::tracked(rocket()).expect("valid rocket instance");
+        let body = "name=&status=new&date=2023-12-25";
+        let response = client
+            .post("/task")
+            .header(ContentType::Form)
+            .body(body)
+            .dispatch();
+
+        // Rocket returns 422 Unprocessable Entity when validation fails
+        assert_eq!(response.status(), Status::UnprocessableEntity);
+    }
+
+    #[test]
+    fn test_input_validation_name_too_long() {
+        let client = Client::tracked(rocket()).expect("valid rocket instance");
+        let long_name = "a".repeat(256);
+        let body = format!("name={}&status=new&date=2023-12-25", long_name);
+        let response = client
+            .post("/task")
+            .header(ContentType::Form)
+            .body(body)
+            .dispatch();
+
+        assert_eq!(response.status(), Status::UnprocessableEntity);
+    }
+
+    #[test]
+    fn test_input_validation_invalid_status() {
+        let client = Client::tracked(rocket()).expect("valid rocket instance");
+        let body = "name=Test&status=invalid&date=2023-12-25";
+        let response = client
+            .post("/task")
+            .header(ContentType::Form)
+            .body(body)
+            .dispatch();
+
+        assert_eq!(response.status(), Status::UnprocessableEntity);
+    }
+
+    #[test]
+    fn test_input_validation_json_name_too_long() {
+        let client = Client::tracked(rocket()).expect("valid rocket instance");
+        let long_name = "a".repeat(256);
+        let response = client
+            .post("/tasks")
+            .header(ContentType::JSON)
+            .body(format!(
+                r#"{{"name": "{}", "status": "new", "date": "2023-10-27"}}"#,
+                long_name
+            ))
+            .dispatch();
+
+        // If this passes (200 OK), then JSON validation is missing
+        assert_eq!(response.status(), Status::UnprocessableEntity);
     }
 }

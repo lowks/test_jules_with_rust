@@ -98,22 +98,6 @@
         </div>
     </div>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/flowbite/2.2.1/flowbite.min.js"></script>
-    <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            const dateInput = document.getElementById('date');
-            if (dateInput) {
-                dateInput.addEventListener('keydown', function(event) {
-                    if (event.key === 'Enter') {
-                        event.preventDefault();
-                        if (typeof this.form.requestSubmit === 'function') {
-                            this.form.requestSubmit();
-                        } else {
-                            this.form.submit();
-                        }
-                    }
-                });
-            }
-        });
-    </script>
+    <script src="/static/js/main.js"></script>
 </body>
 </html>
