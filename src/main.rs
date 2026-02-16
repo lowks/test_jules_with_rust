@@ -4,8 +4,9 @@ use rocket::{
     form::FromFormField,
     fs::{relative, FileServer},
     get,
-    http::{Header, Status},
+    http::{Cookie, Header, SameSite, Status},
     launch, post,
+    request::{FromRequest, Outcome},
     response::Redirect,
     routes,
     serde::{json::Json, Deserialize, Serialize},
@@ -16,6 +17,60 @@ use rocket_sync_db_pools::{database, rusqlite};
 
 #[database("sqlite_db")]
 pub struct Db(rusqlite::Connection);
+
+const CSRF_COOKIE_NAME: &str = "csrf_token";
+
+pub struct CsrfToken(pub String);
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for CsrfToken {
+    type Error = std::convert::Infallible;
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        let cookies = request.cookies();
+        if let Some(cookie) = cookies.get(CSRF_COOKIE_NAME) {
+            Outcome::Success(CsrfToken(cookie.value().to_string()))
+        } else {
+            let token = uuid::Uuid::new_v4().to_string();
+            cookies.add(
+                Cookie::build((CSRF_COOKIE_NAME, token.clone()))
+                    .path("/")
+                    .same_site(SameSite::Lax)
+                    .http_only(true)
+                    .build(),
+            );
+            Outcome::Success(CsrfToken(token))
+        }
+    }
+}
+
+#[derive(FromForm)]
+pub struct CsrfForm {
+    pub csrf_token: String,
+}
+
+pub struct XCsrfToken(pub String);
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for XCsrfToken {
+    type Error = ();
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        match request.headers().get_one("X-CSRF-Token") {
+            Some(token) => Outcome::Success(XCsrfToken(token.to_string())),
+            None => Outcome::Error((Status::Forbidden, ())),
+        }
+    }
+}
+
+#[derive(FromForm)]
+pub struct TaskForm {
+    #[field(validate = len(1..255))]
+    pub name: String,
+    pub status: TaskStatus,
+    pub date: String,
+    pub csrf_token: String,
+}
 
 #[derive(Debug, FromFormField, Serialize, Deserialize, Clone, Copy, PartialEq)]
 #[serde(crate = "rocket::serde", rename_all = "lowercase")]
@@ -163,6 +218,7 @@ async fn index(
     db: Db,
     sort_by: Option<SortColumn>,
     order: Option<SortDirection>,
+    csrf_token: CsrfToken,
 ) -> Result<Template, Status> {
     let sort_by = sort_by.unwrap_or(SortColumn::Date);
     let order = order.unwrap_or(SortDirection::Desc);
@@ -198,6 +254,7 @@ async fn index(
             next_order_name: next_order_name,
             next_order_status: next_order_status,
             next_order_date: next_order_date,
+            csrf_token: csrf_token.0,
         },
     ))
 }
@@ -217,15 +274,37 @@ async fn get_tasks(
 }
 
 #[post("/task", data = "<task>")]
-async fn create_task_form(db: Db, task: rocket::form::Form<Task>) -> Result<Redirect, Status> {
-    Task::insert(&db, task.into_inner())
+async fn create_task_form(
+    db: Db,
+    csrf_token: CsrfToken,
+    task: rocket::form::Form<TaskForm>,
+) -> Result<Redirect, Status> {
+    if csrf_token.0 != task.csrf_token {
+        return Err(Status::Forbidden);
+    }
+    let task_obj = Task {
+        id: None,
+        name: task.name.clone(),
+        status: task.status,
+        date: task.date.clone(),
+    };
+    Task::insert(&db, task_obj)
         .await
         .map_err(|_| Status::InternalServerError)?;
     Ok(Redirect::to("/"))
 }
 
 #[post("/tasks", format = "json", data = "<task>")]
-async fn create_task_json(db: Db, task: Json<Task>) -> Result<Json<Task>, Status> {
+async fn create_task_json(
+    db: Db,
+    csrf_token: CsrfToken,
+    x_csrf_token: XCsrfToken,
+    task: Json<Task>,
+) -> Result<Json<Task>, Status> {
+    if x_csrf_token.0 != csrf_token.0 {
+        return Err(Status::Forbidden);
+    }
+
     let mut task_obj = task.into_inner();
     if task_obj.name.is_empty() || task_obj.name.len() > 255 {
         return Err(Status::UnprocessableEntity);
@@ -238,29 +317,63 @@ async fn create_task_json(db: Db, task: Json<Task>) -> Result<Json<Task>, Status
 }
 
 #[get("/task/<id>")]
-async fn view_task(db: Db, id: i64) -> Option<Template> {
-    Task::find(&db, id)
-        .await
-        .map(|task| Template::render("view", context! { task: task }))
+async fn view_task(db: Db, id: i64, csrf_token: CsrfToken) -> Option<Template> {
+    Task::find(&db, id).await.map(|task| {
+        Template::render(
+            "view",
+            context! {
+                task: task,
+                csrf_token: csrf_token.0,
+            },
+        )
+    })
 }
 
 #[get("/task/<id>/edit")]
-async fn edit_task(db: Db, id: i64) -> Option<Template> {
-    Task::find(&db, id)
-        .await
-        .map(|task| Template::render("edit", context! { task: task }))
+async fn edit_task(db: Db, id: i64, csrf_token: CsrfToken) -> Option<Template> {
+    Task::find(&db, id).await.map(|task| {
+        Template::render(
+            "edit",
+            context! {
+                task: task,
+                csrf_token: csrf_token.0,
+            },
+        )
+    })
 }
 
 #[post("/task/<id>", data = "<task>")]
-async fn update_task(db: Db, id: i64, task: rocket::form::Form<Task>) -> Result<Redirect, Status> {
-    Task::update(&db, id, task.into_inner())
+async fn update_task(
+    db: Db,
+    id: i64,
+    csrf_token: CsrfToken,
+    task: rocket::form::Form<TaskForm>,
+) -> Result<Redirect, Status> {
+    if csrf_token.0 != task.csrf_token {
+        return Err(Status::Forbidden);
+    }
+    let task_obj = Task {
+        id: Some(id),
+        name: task.name.clone(),
+        status: task.status,
+        date: task.date.clone(),
+    };
+    Task::update(&db, id, task_obj)
         .await
         .map_err(|_| Status::InternalServerError)?;
     Ok(Redirect::to("/"))
 }
 
-#[post("/task/<id>/delete")]
-async fn delete_task(db: Db, id: i64) -> Result<Redirect, Status> {
+#[post("/task/<id>/delete", data = "<form>")]
+async fn delete_task(
+    db: Db,
+    id: i64,
+    csrf_token: CsrfToken,
+    form: rocket::form::Form<CsrfForm>,
+) -> Result<Redirect, Status> {
+    if csrf_token.0 != form.csrf_token {
+        return Err(Status::Forbidden);
+    }
     Task::delete(&db, id)
         .await
         .map_err(|_| Status::InternalServerError)?;
@@ -345,6 +458,16 @@ mod tests {
     use rocket::http::{ContentType, Status};
     use rocket::local::blocking::Client;
 
+    fn get_csrf_token(client: &Client) -> String {
+        client.get("/").dispatch();
+        client
+            .cookies()
+            .get(CSRF_COOKIE_NAME)
+            .unwrap()
+            .value()
+            .to_string()
+    }
+
     #[test]
     fn test_index_page() {
         let client = Client::tracked(rocket()).expect("valid rocket instance");
@@ -368,12 +491,14 @@ mod tests {
     #[test]
     fn test_create_and_get_tasks_json() {
         let client = Client::tracked(rocket()).expect("valid rocket instance");
+        let csrf_token = get_csrf_token(&client);
 
         // 1. Create a new task via JSON
         let task_name = format!("Test JSON Task {}", uuid::Uuid::new_v4());
         let response = client
             .post("/tasks")
             .header(ContentType::JSON)
+            .header(Header::new("X-CSRF-Token", csrf_token))
             .body(format!(
                 r#"{{"name": "{}", "status": "new", "date": "2023-10-27"}}"#,
                 task_name
@@ -393,10 +518,14 @@ mod tests {
     #[test]
     fn test_create_task_form() {
         let client = Client::tracked(rocket()).expect("valid rocket instance");
+        let csrf_token = get_csrf_token(&client);
 
         // 1. Create a new task via Form
         let task_name = format!("Test Form Task {}", uuid::Uuid::new_v4());
-        let body = format!("name={}&status=done&date=2023-12-25", task_name);
+        let body = format!(
+            "name={}&status=done&date=2023-12-25&csrf_token={}",
+            task_name, csrf_token
+        );
         let response = client
             .post("/task")
             .header(ContentType::Form)
@@ -417,12 +546,14 @@ mod tests {
     #[test]
     fn test_view_task() {
         let client = Client::tracked(rocket()).expect("valid rocket instance");
+        let csrf_token = get_csrf_token(&client);
 
         // 1. Create a task
         let task_name = format!("View Test Task {}", uuid::Uuid::new_v4());
         let response = client
             .post("/tasks")
             .header(ContentType::JSON)
+            .header(Header::new("X-CSRF-Token", csrf_token))
             .body(format!(
                 r#"{{"name": "{}", "status": "new", "date": "2023-10-27"}}"#,
                 task_name
@@ -442,12 +573,14 @@ mod tests {
     #[test]
     fn test_edit_and_update_task() {
         let client = Client::tracked(rocket()).expect("valid rocket instance");
+        let csrf_token = get_csrf_token(&client);
 
         // 1. Create a task
         let task_name = format!("Edit Test Task {}", uuid::Uuid::new_v4());
         let response = client
             .post("/tasks")
             .header(ContentType::JSON)
+            .header(Header::new("X-CSRF-Token", csrf_token.clone()))
             .body(format!(
                 r#"{{"name": "{}", "status": "new", "date": "2023-10-27"}}"#,
                 task_name
@@ -463,7 +596,10 @@ mod tests {
 
         // 3. Update the task
         let updated_name = format!("Updated Task {}", uuid::Uuid::new_v4());
-        let body = format!("name={}&status=done&date=2024-01-01", updated_name);
+        let body = format!(
+            "name={}&status=done&date=2024-01-01&csrf_token={}",
+            updated_name, csrf_token
+        );
         let response = client
             .post(format!("/task/{}", id))
             .header(ContentType::Form)
@@ -482,12 +618,14 @@ mod tests {
     #[test]
     fn test_delete_task() {
         let client = Client::tracked(rocket()).expect("valid rocket instance");
+        let csrf_token = get_csrf_token(&client);
 
         // 1. Create a task
         let task_name = format!("Delete Test Task {}", uuid::Uuid::new_v4());
         let response = client
             .post("/tasks")
             .header(ContentType::JSON)
+            .header(Header::new("X-CSRF-Token", csrf_token.clone()))
             .body(format!(
                 r#"{{"name": "{}", "status": "new", "date": "2023-10-27"}}"#,
                 task_name
@@ -497,7 +635,11 @@ mod tests {
         let id = task.id.unwrap();
 
         // 2. Delete the task
-        let response = client.post(format!("/task/{}/delete", id)).dispatch();
+        let response = client
+            .post(format!("/task/{}/delete", id))
+            .header(ContentType::Form)
+            .body(format!("csrf_token={}", csrf_token))
+            .dispatch();
         assert_eq!(response.status(), Status::SeeOther);
 
         // 3. Verify it's gone
@@ -532,7 +674,8 @@ mod tests {
     #[test]
     fn test_input_validation_name_too_short() {
         let client = Client::tracked(rocket()).expect("valid rocket instance");
-        let body = "name=&status=new&date=2023-12-25";
+        let csrf_token = get_csrf_token(&client);
+        let body = format!("name=&status=new&date=2023-12-25&csrf_token={}", csrf_token);
         let response = client
             .post("/task")
             .header(ContentType::Form)
@@ -546,8 +689,12 @@ mod tests {
     #[test]
     fn test_input_validation_name_too_long() {
         let client = Client::tracked(rocket()).expect("valid rocket instance");
+        let csrf_token = get_csrf_token(&client);
         let long_name = "a".repeat(256);
-        let body = format!("name={}&status=new&date=2023-12-25", long_name);
+        let body = format!(
+            "name={}&status=new&date=2023-12-25&csrf_token={}",
+            long_name, csrf_token
+        );
         let response = client
             .post("/task")
             .header(ContentType::Form)
@@ -560,7 +707,11 @@ mod tests {
     #[test]
     fn test_input_validation_invalid_status() {
         let client = Client::tracked(rocket()).expect("valid rocket instance");
-        let body = "name=Test&status=invalid&date=2023-12-25";
+        let csrf_token = get_csrf_token(&client);
+        let body = format!(
+            "name=Test&status=invalid&date=2023-12-25&csrf_token={}",
+            csrf_token
+        );
         let response = client
             .post("/task")
             .header(ContentType::Form)
@@ -573,10 +724,12 @@ mod tests {
     #[test]
     fn test_input_validation_json_name_too_long() {
         let client = Client::tracked(rocket()).expect("valid rocket instance");
+        let csrf_token = get_csrf_token(&client);
         let long_name = "a".repeat(256);
         let response = client
             .post("/tasks")
             .header(ContentType::JSON)
+            .header(Header::new("X-CSRF-Token", csrf_token))
             .body(format!(
                 r#"{{"name": "{}", "status": "new", "date": "2023-10-27"}}"#,
                 long_name
@@ -588,8 +741,38 @@ mod tests {
     }
 
     #[test]
+    fn test_csrf_protection_enforcement() {
+        let client = Client::tracked(rocket()).expect("valid rocket instance");
+
+        // 1. Try to create a task via Form without CSRF token
+        let response = client
+            .post("/task")
+            .header(ContentType::Form)
+            .body("name=Test&status=new&date=2023-12-25")
+            .dispatch();
+        assert_eq!(response.status(), Status::UnprocessableEntity);
+
+        // 1.5 Try to create a task via Form with WRONG CSRF token
+        let response = client
+            .post("/task")
+            .header(ContentType::Form)
+            .body("name=Test&status=new&date=2023-12-25&csrf_token=wrong")
+            .dispatch();
+        assert_eq!(response.status(), Status::Forbidden);
+
+        // 2. Try to create a task via JSON without X-CSRF-Token header
+        let response = client
+            .post("/tasks")
+            .header(ContentType::JSON)
+            .body(r#"{"name": "Test", "status": "new", "date": "2023-10-27"}"#)
+            .dispatch();
+        assert_eq!(response.status(), Status::Forbidden);
+    }
+
+    #[test]
     fn test_sorting_by_name() {
         let client = Client::tracked(rocket()).expect("valid rocket instance");
+        let csrf_token = get_csrf_token(&client);
         let uuid = uuid::Uuid::new_v4().to_string();
         let name_a = format!("A Task {}", uuid);
         let name_b = format!("B Task {}", uuid);
@@ -597,6 +780,7 @@ mod tests {
         client
             .post("/tasks")
             .header(ContentType::JSON)
+            .header(Header::new("X-CSRF-Token", csrf_token.clone()))
             .body(format!(
                 r#"{{"name": "{}", "status": "new", "date": "2023-01-01"}}"#,
                 name_a
@@ -605,6 +789,7 @@ mod tests {
         client
             .post("/tasks")
             .header(ContentType::JSON)
+            .header(Header::new("X-CSRF-Token", csrf_token.clone()))
             .body(format!(
                 r#"{{"name": "{}", "status": "new", "date": "2023-01-01"}}"#,
                 name_b

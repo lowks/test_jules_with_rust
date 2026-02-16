@@ -16,6 +16,7 @@
 
         <div class="bg-white rounded-lg shadow-md p-6">
             <form action="/task/{{ task.id }}" method="post" class="space-y-6">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <div>
                     <label for="name" class="block mb-2 text-sm font-medium text-gray-900">Task Name</label>
                     <input type="text" id="name" name="name" value="{{ task.name }}" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5" required>
