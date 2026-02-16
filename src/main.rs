@@ -765,22 +765,6 @@ pub fn rocket() -> _ {
                         rusqlite::Error::ExecuteReturnedResults // Dummy error
                     })?;
 
-                    // Seed admin user
-                    let count: i64 = conn.query_row(
-                        "SELECT COUNT(*) FROM users WHERE username = 'admin'",
-                        [],
-                        |row| row.get(0),
-                    )?;
-
-                    if count == 0 {
-                        let hash = bcrypt::hash("admin", bcrypt::DEFAULT_COST).map_err(|_| {
-                            rusqlite::Error::ExecuteReturnedResults // Dummy error
-                        })?;
-                        conn.execute(
-                            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
-                            ["admin", &hash],
-                        )?;
-                    }
                     Ok::<(), rusqlite::Error>(())
                 })
                 .await;
