@@ -10,8 +10,14 @@ def test_sorting():
 
         try:
             # Navigate to the app
-            print("Navigating to http://127.0.0.1:8000...")
-            page.goto("http://127.0.0.1:8000")
+            print("Navigating to http://127.0.0.1:8000/login...")
+            page.goto("http://127.0.0.1:8000/login")
+
+            print("Logging in as admin...")
+            page.fill("#username", "admin")
+            page.fill("#password", "admin")
+            page.click("button[type='submit']")
+            page.wait_for_load_state("networkidle")
 
             # Add some tasks to ensure we have something to sort
             uid = str(int(time.time()))
