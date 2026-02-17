@@ -1,4 +1,5 @@
 use rocket::{
+    catch, catchers,
     fairing::AdHoc,
     fairing::{Fairing, Info, Kind},
     form::FromFormField,
@@ -378,6 +379,26 @@ impl Task {
     }
 }
 
+#[catch(401)]
+fn unauthorized() -> Redirect {
+    Redirect::to("/login")
+}
+
+#[catch(403)]
+fn forbidden() -> Template {
+    Template::render("403", context! {})
+}
+
+#[catch(404)]
+fn not_found() -> Template {
+    Template::render("404", context! {})
+}
+
+#[catch(500)]
+fn internal_error() -> Template {
+    Template::render("500", context! {})
+}
+
 #[get("/login")]
 async fn login_page(csrf_token: CsrfToken) -> Template {
     Template::render("login", context! { csrf_token: csrf_token.0 })
@@ -433,60 +454,67 @@ async fn logout(cookies: &rocket::http::CookieJar<'_>) -> Redirect {
 #[get("/?<sort_by>&<order>&<page>")]
 async fn index(
     db: Db,
-    auth: AuthUser,
+    auth: Option<AuthUser>,
     sort_by: Option<SortColumn>,
     order: Option<SortDirection>,
     page: Option<i64>,
     csrf_token: CsrfToken,
 ) -> Result<Template, Status> {
-    let sort_by = sort_by.unwrap_or(SortColumn::Date);
-    let order = order.unwrap_or(SortDirection::Desc);
-    let page = page.unwrap_or(1).max(1);
-    let limit = 10;
-    let offset = (page - 1) * limit;
+    if let Some(auth) = auth {
+        let sort_by = sort_by.unwrap_or(SortColumn::Date);
+        let order = order.unwrap_or(SortDirection::Desc);
+        let page = page.unwrap_or(1).max(1);
+        let limit = 10;
+        let offset = (page - 1) * limit;
 
-    let total_tasks = Task::count(&db, auth.0.id)
-        .await
-        .map_err(|_| Status::InternalServerError)?;
-    let total_pages = (total_tasks as f64 / limit as f64).ceil() as i64;
+        let total_tasks = Task::count(&db, auth.0.id)
+            .await
+            .map_err(|_| Status::InternalServerError)?;
+        let total_pages = (total_tasks as f64 / limit as f64).ceil() as i64;
 
-    let tasks = Task::all(&db, auth.0.id, sort_by, order, limit, offset)
-        .await
-        .map_err(|_| Status::InternalServerError)?;
+        let tasks = Task::all(&db, auth.0.id, sort_by, order, limit, offset)
+            .await
+            .map_err(|_| Status::InternalServerError)?;
 
-    let next_order_name = if sort_by == SortColumn::Name && order == SortDirection::Asc {
-        SortDirection::Desc
+        let next_order_name = if sort_by == SortColumn::Name && order == SortDirection::Asc {
+            SortDirection::Desc
+        } else {
+            SortDirection::Asc
+        };
+
+        let next_order_status = if sort_by == SortColumn::Status && order == SortDirection::Asc {
+            SortDirection::Desc
+        } else {
+            SortDirection::Asc
+        };
+
+        let next_order_date = if sort_by == SortColumn::Date && order == SortDirection::Asc {
+            SortDirection::Desc
+        } else {
+            SortDirection::Asc
+        };
+
+        Ok(Template::render(
+            "index",
+            context! {
+                user: auth.0,
+                tasks: tasks,
+                sort_by: sort_by,
+                order: order,
+                page: page,
+                total_pages: total_pages,
+                next_order_name: next_order_name,
+                next_order_status: next_order_status,
+                next_order_date: next_order_date,
+                csrf_token: csrf_token.0,
+            },
+        ))
     } else {
-        SortDirection::Asc
-    };
-
-    let next_order_status = if sort_by == SortColumn::Status && order == SortDirection::Asc {
-        SortDirection::Desc
-    } else {
-        SortDirection::Asc
-    };
-
-    let next_order_date = if sort_by == SortColumn::Date && order == SortDirection::Asc {
-        SortDirection::Desc
-    } else {
-        SortDirection::Asc
-    };
-
-    Ok(Template::render(
-        "index",
-        context! {
-            user: auth.0,
-            tasks: tasks,
-            sort_by: sort_by,
-            order: order,
-            page: page,
-            total_pages: total_pages,
-            next_order_name: next_order_name,
-            next_order_status: next_order_status,
-            next_order_date: next_order_date,
-            csrf_token: csrf_token.0,
-        },
-    ))
+        Ok(Template::render(
+            "landing",
+            context! { csrf_token: csrf_token.0 },
+        ))
+    }
 }
 
 #[get("/tasks?<sort_by>&<order>&<page>&<limit>")]
@@ -800,6 +828,10 @@ pub fn rocket() -> _ {
             rocket
         }))
         .mount("/static", FileServer::from(relative!("static")))
+        .register(
+            "/",
+            catchers![unauthorized, forbidden, not_found, internal_error],
+        )
         .mount(
             "/",
             routes![
@@ -925,14 +957,15 @@ mod tests {
     }
 
     #[test]
-    fn test_login_and_index_page() {
+    fn test_landing_page_and_login() {
         let client = Client::tracked(rocket()).expect("valid rocket instance");
 
-        // Before login, should be redirected to /login (because AuthUser guard forwards)
-        // Wait, AuthUser forwards to Status::Unauthorized if not logged in.
-        // But our route doesn't have a catcher. Rocket will return 401.
+        // Before login, should show the landing page
         let response = client.get("/").dispatch();
-        assert_eq!(response.status(), Status::Unauthorized);
+        assert_eq!(response.status(), Status::Ok);
+        let body = response.into_string().unwrap();
+        assert!(body.contains("Organize your life"));
+        assert!(body.contains("Get Started Now"));
 
         login(&client, "admin", "admin");
 
@@ -941,6 +974,28 @@ mod tests {
         let body = response.into_string().unwrap();
         assert!(body.contains("Task Tracker"));
         assert!(body.contains("Add New Task"));
+        assert!(body.contains("Hello, <span class=\"text-blue-600\">admin</span>"));
+    }
+
+    #[test]
+    fn test_unauthorized_redirect() {
+        let client = Client::tracked(rocket()).expect("valid rocket instance");
+
+        // Accessing a protected route without login should redirect to /login
+        let response = client.get("/task/1").dispatch();
+        assert_eq!(response.status(), Status::SeeOther);
+        assert_eq!(response.headers().get_one("Location"), Some("/login"));
+    }
+
+    #[test]
+    fn test_custom_404_page() {
+        let client = Client::tracked(rocket()).expect("valid rocket instance");
+
+        let response = client.get("/non-existent-page").dispatch();
+        assert_eq!(response.status(), Status::NotFound);
+        let body = response.into_string().unwrap();
+        assert!(body.contains("404"));
+        assert!(body.contains("Oops! Page not found."));
     }
 
     #[test]
@@ -1242,7 +1297,9 @@ mod tests {
 
         // I will add a test that checks if unauthorized user can access tasks.
         let response = client.get("/tasks").dispatch();
-        assert_eq!(response.status(), Status::Unauthorized);
+        // Since we added a 401 catcher that redirects, it will now be SeeOther
+        assert_eq!(response.status(), Status::SeeOther);
+        assert_eq!(response.headers().get_one("Location"), Some("/login"));
     }
 
     #[test]
@@ -1251,7 +1308,8 @@ mod tests {
 
         // 1. Try to access user_admin without login
         let response = client.get("/user_admin").dispatch();
-        assert_eq!(response.status(), Status::Unauthorized);
+        assert_eq!(response.status(), Status::SeeOther);
+        assert_eq!(response.headers().get_one("Location"), Some("/login"));
 
         // 2. Login as non-admin (need to create one first)
         let csrf_token = login(&client, "admin", "admin");
