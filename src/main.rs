@@ -1,3 +1,4 @@
+use chrono::{Duration, Local, NaiveDate};
 use rocket::{
     catch, catchers,
     fairing::AdHoc,
@@ -270,9 +271,21 @@ pub struct Task {
     pub status: TaskStatus,
     pub date: String, // ISO date string from date picker
     pub user_id: Option<i64>,
+    #[serde(default)]
+    pub is_urgent: bool,
 }
 
 impl Task {
+    fn is_date_urgent(date_str: &str) -> bool {
+        let now = Local::now().date_naive();
+        let tomorrow = now + Duration::days(1);
+        if let Ok(task_date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+            task_date >= now && task_date <= tomorrow
+        } else {
+            false
+        }
+    }
+
     pub async fn all(
         db: &Db,
         user_id: i64,
@@ -297,12 +310,15 @@ impl Task {
             );
             let mut stmt = conn.prepare(&query)?;
             let task_iter = stmt.query_map(rusqlite::params![user_id, limit, offset], |row| {
+                let date_str: String = row.get(3)?;
+                let is_urgent = Self::is_date_urgent(&date_str);
                 Ok(Task {
                     id: Some(row.get(0)?),
                     name: row.get(1)?,
                     status: row.get(2)?,
-                    date: row.get(3)?,
+                    date: date_str,
                     user_id: Some(row.get(4)?),
+                    is_urgent,
                 })
             })?;
 
@@ -339,12 +355,15 @@ impl Task {
                 "SELECT id, name, status, date, user_id FROM tasks WHERE id = ? AND user_id = ?",
                 [id, user_id],
                 |row| {
+                    let date_str: String = row.get(3)?;
+                    let is_urgent = Self::is_date_urgent(&date_str);
                     Ok(Task {
                         id: Some(row.get(0)?),
                         name: row.get(1)?,
                         status: row.get(2)?,
-                        date: row.get(3)?,
+                        date: date_str,
                         user_id: Some(row.get(4)?),
+                        is_urgent,
                     })
                 },
             )
@@ -554,6 +573,7 @@ async fn create_task_form(
         status: task.status,
         date: task.date.clone(),
         user_id: Some(auth.0.id),
+        is_urgent: false,
     };
     Task::insert(&db, task_obj)
         .await
@@ -751,6 +771,7 @@ async fn update_task(
         status: task.status,
         date: task.date.clone(),
         user_id: Some(auth.0.id),
+        is_urgent: false,
     };
     Task::update(&db, id, auth.0.id, task_obj)
         .await
@@ -1454,5 +1475,66 @@ mod tests {
         assert_eq!(filtered_tasks.len(), 2);
         assert_eq!(filtered_tasks[0].name, name_b);
         assert_eq!(filtered_tasks[1].name, name_a);
+    }
+
+    #[test]
+    fn test_task_urgency() {
+        let client = Client::tracked(rocket()).expect("valid rocket instance");
+        let csrf_token = login(&client, "admin", "admin");
+
+        let now = Local::now().date_naive();
+        let today_str = now.format("%Y-%m-%d").to_string();
+        let tomorrow_str = (now + Duration::days(1)).format("%Y-%m-%d").to_string();
+        let next_week_str = (now + Duration::days(7)).format("%Y-%m-%d").to_string();
+
+        // 1. Create task for today
+        client
+            .post("/tasks")
+            .header(ContentType::JSON)
+            .header(Header::new("X-CSRF-Token", csrf_token.clone()))
+            .body(format!(
+                r#"{{"name": "Today Task", "status": "new", "date": "{}"}}"#,
+                today_str
+            ))
+            .dispatch();
+
+        // 2. Create task for tomorrow
+        client
+            .post("/tasks")
+            .header(ContentType::JSON)
+            .header(Header::new("X-CSRF-Token", csrf_token.clone()))
+            .body(format!(
+                r#"{{"name": "Tomorrow Task", "status": "new", "date": "{}"}}"#,
+                tomorrow_str
+            ))
+            .dispatch();
+
+        // 3. Create task for next week
+        client
+            .post("/tasks")
+            .header(ContentType::JSON)
+            .header(Header::new("X-CSRF-Token", csrf_token))
+            .body(format!(
+                r#"{{"name": "Next Week Task", "status": "new", "date": "{}"}}"#,
+                next_week_str
+            ))
+            .dispatch();
+
+        // 4. Verify urgency
+        let response = client
+            .get("/tasks?limit=100&sort_by=name&order=asc")
+            .dispatch();
+        let tasks: Vec<Task> = response.into_json().expect("valid JSON tasks");
+
+        let today_task = tasks.iter().find(|t| t.name == "Today Task").unwrap();
+        let tomorrow_task = tasks.iter().find(|t| t.name == "Tomorrow Task").unwrap();
+        let next_week_task = tasks.iter().find(|t| t.name == "Next Week Task").unwrap();
+
+        assert!(today_task.is_urgent, "Today task should be urgent");
+        assert!(tomorrow_task.is_urgent, "Tomorrow task should be urgent");
+        assert!(
+            !next_week_task.is_urgent,
+            "Next week task should NOT be urgent"
+        );
     }
 }

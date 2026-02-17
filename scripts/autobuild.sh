@@ -63,10 +63,19 @@ if [ $UP -eq 0 ]; then
 fi
 
 # Run UI tests
+echo "Running UI Sorting Test..."
 if python3 tests_ui/test_sorting.py; then
-    echo "UI tests passed!"
+    echo "UI Sorting Test passed!"
 else
-    echo "UI tests failed!"
+    echo "UI Sorting Test failed!"
+    exit 1
+fi
+
+echo "Running UI Urgency Test..."
+if python3 tests_ui/test_urgency.py; then
+    echo "UI Urgency Test passed!"
+else
+    echo "UI Urgency Test failed!"
     exit 1
 fi
 
