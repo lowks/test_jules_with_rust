@@ -125,7 +125,11 @@
                     </thead>
                     <tbody>
                         {% for task in tasks %}
+                        {% if task.is_urgent %}
+                        <tr class="bg-red-50 border-b hover:bg-red-100">
+                        {% else %}
                         <tr class="bg-white border-b hover:bg-gray-50">
+                        {% endif %}
                             <th scope="row" class="px-6 py-4 font-medium text-gray-900 whitespace-nowrap">
                                 {{ task.name }}
                             </th>
