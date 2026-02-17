@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Welcome to Task Tracker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/flowbite/2.2.1/flowbite.min.css" rel="stylesheet" />
+</head>
+<body class="bg-gray-50 font-sans">
+    <div class="min-h-screen flex flex-col items-center justify-center px-4 py-12">
+        <div class="max-w-3xl w-full text-center">
+            <h1 class="text-5xl md:text-6xl font-extrabold text-gray-900 mb-6">
+                Organize your life with <span class="text-blue-600">Task Tracker</span>
+            </h1>
+            <p class="text-xl text-gray-600 mb-10 leading-relaxed">
+                The simplest and most effective way to manage your daily tasks.
+                Stay productive, hit your deadlines, and achieve your goals.
+            </p>
+
+            <div class="flex flex-col sm:flex-row justify-center gap-4 mb-16">
+                <a href="/login" class="text-white bg-blue-600 hover:bg-blue-700 focus:ring-4 focus:ring-blue-300 font-bold rounded-lg text-lg px-8 py-4 transition-all transform hover:scale-105">
+                    Get Started Now
+                </a>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-8 text-left">
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                    <div class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mb-4">
+                        <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path></svg>
+                    </div>
+                    <h3 class="text-xl font-bold text-gray-900 mb-2">Easy Management</h3>
+                    <p class="text-gray-600">Quickly add, edit, and organize your tasks with our intuitive interface.</p>
+                </div>
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                    <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center mb-4">
+                        <svg class="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                    </div>
+                    <h3 class="text-xl font-bold text-gray-900 mb-2">Due Dates</h3>
+                    <p class="text-gray-600">Keep track of deadlines with our built-in date picker and stay on schedule.</p>
+                </div>
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                    <div class="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center mb-4">
+                        <svg class="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                    </div>
+                    <h3 class="text-xl font-bold text-gray-900 mb-2">Secure</h3>
+                    <p class="text-gray-600">Your data is private and secure with our built-in authentication system.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    <footer class="py-8 border-t border-gray-200 text-center text-gray-500 text-sm">
+        &copy; 2024 Task Tracker. All rights reserved.
+    </footer>
+</body>
+</html>
