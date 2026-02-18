@@ -125,7 +125,9 @@
                     </thead>
                     <tbody>
                         {% for task in tasks %}
-                        {% if task.is_urgent %}
+                        {% if task.is_expired %}
+                        <tr class="bg-gray-300 border-b hover:bg-gray-400">
+                        {% elif task.is_urgent %}
                         <tr class="bg-red-50 border-b hover:bg-red-100">
                         {% else %}
                         <tr class="bg-white border-b hover:bg-gray-50">
@@ -136,6 +138,8 @@
                             <td class="px-6 py-4 text-center">
                                 {% if task.status == "done" %}
                                 <span class="bg-green-100 text-green-800 text-xs font-medium px-2.5 py-0.5 rounded-full">Done</span>
+                                {% elif task.is_expired %}
+                                <span class="bg-red-200 text-red-900 text-xs font-medium px-2.5 py-0.5 rounded-full">Expired</span>
                                 {% else %}
                                 <span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-0.5 rounded-full">New</span>
                                 {% endif %}
