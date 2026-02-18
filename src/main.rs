@@ -273,6 +273,8 @@ pub struct Task {
     pub user_id: Option<i64>,
     #[serde(default)]
     pub is_urgent: bool,
+    #[serde(default)]
+    pub is_expired: bool,
 }
 
 impl Task {
@@ -281,6 +283,18 @@ impl Task {
         let tomorrow = now + Duration::days(1);
         if let Ok(task_date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
             task_date >= now && task_date <= tomorrow
+        } else {
+            false
+        }
+    }
+
+    fn is_date_expired(date_str: &str, status: TaskStatus) -> bool {
+        if status == TaskStatus::Done {
+            return false;
+        }
+        let now = Local::now().date_naive();
+        if let Ok(task_date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+            task_date < now
         } else {
             false
         }
@@ -304,21 +318,25 @@ impl Task {
                 SortDirection::Asc => "ASC",
                 SortDirection::Desc => "DESC",
             };
+            let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
             let query = format!(
-                "SELECT id, name, status, date, user_id FROM tasks WHERE user_id = ? ORDER BY {} {} LIMIT ? OFFSET ?",
+                "SELECT id, name, status, date, user_id FROM tasks WHERE user_id = ? ORDER BY (date < ? AND status = 'new') DESC, {} {} LIMIT ? OFFSET ?",
                 sql_column, sql_order
             );
             let mut stmt = conn.prepare(&query)?;
-            let task_iter = stmt.query_map(rusqlite::params![user_id, limit, offset], |row| {
+            let task_iter = stmt.query_map(rusqlite::params![user_id, today, limit, offset], |row| {
                 let date_str: String = row.get(3)?;
+                let status: TaskStatus = row.get(2)?;
                 let is_urgent = Self::is_date_urgent(&date_str);
+                let is_expired = Self::is_date_expired(&date_str, status);
                 Ok(Task {
                     id: Some(row.get(0)?),
                     name: row.get(1)?,
-                    status: row.get(2)?,
+                    status,
                     date: date_str,
                     user_id: Some(row.get(4)?),
                     is_urgent,
+                    is_expired,
                 })
             })?;
 
@@ -356,14 +374,17 @@ impl Task {
                 [id, user_id],
                 |row| {
                     let date_str: String = row.get(3)?;
+                    let status: TaskStatus = row.get(2)?;
                     let is_urgent = Self::is_date_urgent(&date_str);
+                    let is_expired = Self::is_date_expired(&date_str, status);
                     Ok(Task {
                         id: Some(row.get(0)?),
                         name: row.get(1)?,
-                        status: row.get(2)?,
+                        status,
                         date: date_str,
                         user_id: Some(row.get(4)?),
                         is_urgent,
+                        is_expired,
                     })
                 },
             )
@@ -574,6 +595,7 @@ async fn create_task_form(
         date: task.date.clone(),
         user_id: Some(auth.0.id),
         is_urgent: false,
+        is_expired: false,
     };
     Task::insert(&db, task_obj)
         .await
@@ -772,6 +794,7 @@ async fn update_task(
         date: task.date.clone(),
         user_id: Some(auth.0.id),
         is_urgent: false,
+        is_expired: false,
     };
     Task::update(&db, id, auth.0.id, task_obj)
         .await
@@ -1536,5 +1559,63 @@ mod tests {
             !next_week_task.is_urgent,
             "Next week task should NOT be urgent"
         );
+    }
+
+    #[test]
+    fn test_task_expired() {
+        let client = Client::tracked(rocket()).expect("valid rocket instance");
+        let admin_csrf = login(&client, "admin", "admin");
+        let username = format!("u{}", uuid::Uuid::new_v4().to_string().replace("-", ""));
+
+        // Create a new user to have a clean task list
+        client
+            .post("/user_admin")
+            .header(ContentType::Form)
+            .body(format!(
+                "username={}&password=password&csrf_token={}",
+                username, admin_csrf
+            ))
+            .dispatch();
+
+        client.post("/logout").dispatch();
+        let csrf_token = login(&client, &username, "password");
+
+        let now = Local::now().date_naive();
+        let past_str = (now - Duration::days(7)).format("%Y-%m-%d").to_string();
+        let future_str = (now + Duration::days(7)).format("%Y-%m-%d").to_string();
+
+        // 1. Create expired task
+        client
+            .post("/tasks")
+            .header(ContentType::JSON)
+            .header(Header::new("X-CSRF-Token", csrf_token.clone()))
+            .body(format!(
+                r#"{{"name": "Expired Task", "status": "new", "date": "{}"}}"#,
+                past_str
+            ))
+            .dispatch();
+
+        // 2. Create future task
+        client
+            .post("/tasks")
+            .header(ContentType::JSON)
+            .header(Header::new("X-CSRF-Token", csrf_token))
+            .body(format!(
+                r#"{{"name": "Future Task", "status": "new", "date": "{}"}}"#,
+                future_str
+            ))
+            .dispatch();
+
+        // 3. Verify expiration and sorting
+        let response = client
+            .get("/tasks?limit=100&sort_by=date&order=desc")
+            .dispatch();
+        let tasks: Vec<Task> = response.into_json().expect("valid JSON tasks");
+
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].name, "Expired Task");
+        assert!(tasks[0].is_expired);
+        assert_eq!(tasks[1].name, "Future Task");
+        assert!(!tasks[1].is_expired);
     }
 }
